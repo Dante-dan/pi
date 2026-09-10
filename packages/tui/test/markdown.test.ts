@@ -1678,6 +1678,68 @@ bar`,
 		});
 	});
 
+	describe("Images", () => {
+		afterEach(() => {
+			resetCapabilitiesCache();
+		});
+
+		it("should show a text fallback for images when hyperlinks are not supported", () => {
+			// Regression test for https://github.com/earendil-works/pi/issues/9268
+			setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+
+			const paragraph = new Markdown(
+				"Before ![diagram](https://example.com/diagram.png) after",
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+			assert.ok(
+				paragraph
+					.render(80)
+					.map((line) => stripAnsi(line))
+					.join(" ")
+					.includes("Before [Image: diagram] https://example.com/diagram.png after"),
+			);
+
+			const list = new Markdown("- ![](https://example.com/image.png)", 0, 0, defaultMarkdownTheme);
+			assert.ok(
+				list
+					.render(80)
+					.map((line) => stripAnsi(line))
+					.some((line) => line.includes("- [Image] https://example.com/image.png")),
+			);
+		});
+
+		it("should wrap image fallbacks at narrow widths", () => {
+			setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+			const markdown = new Markdown("- ![plot](https://example.com/plot.png)", 0, 0, defaultMarkdownTheme);
+
+			const plainLines = markdown.render(16).map((line) => stripAnsi(line).trimEnd());
+			assert.ok(plainLines.length > 1);
+			assert.ok(plainLines.every((line) => line.length <= 16));
+			const wrappedText = plainLines.map((line) => line.trim()).join("");
+			assert.ok(wrappedText.startsWith("- [Image: plot]"));
+			assert.ok(wrappedText.endsWith("https://example.com/plot.png"));
+		});
+
+		it("should link the fallback label without printing the URL when hyperlinks are supported", () => {
+			setCapabilities({ images: null, trueColor: false, hyperlinks: true });
+			const markdown = new Markdown("![](https://example.com/image.png)", 0, 0, defaultMarkdownTheme, {
+				color: chalk.green,
+			});
+
+			const joined = markdown.render(80).join("");
+			assert.ok(joined.includes("\x1b]8;;https://example.com/image.png\x1b\\"));
+			assert.ok(joined.includes("[Image]"));
+			assert.ok(joined.includes("\x1b[32m"), "Should preserve the default text color on the image label");
+			const visible = joined
+				.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "")
+				.replace(/\x1b\[[0-9;]*m/g, "")
+				.trimEnd();
+			assert.strictEqual(visible, "[Image]");
+		});
+	});
+
 	describe("HTML-like tags in text", () => {
 		it("should render content with HTML-like tags as text", () => {
 			// When the model emits something like <thinking>content</thinking> in regular text,

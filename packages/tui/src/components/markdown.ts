@@ -708,6 +708,17 @@ export class Markdown implements Component {
 					break;
 				}
 
+				case "image": {
+					const label = token.text ? `[Image: ${token.text}]` : "[Image]";
+					const styledLabel = this.theme.link(this.theme.underline(applyText(label)));
+					if (getCapabilities().hyperlinks) {
+						result += hyperlink(styledLabel, token.href) + stylePrefix;
+					} else {
+						result += `${styledLabel} ${this.theme.linkUrl(token.href)}${stylePrefix}`;
+					}
+					break;
+				}
+
 				case "br":
 					result += "\n";
 					break;
