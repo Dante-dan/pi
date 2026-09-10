@@ -765,6 +765,14 @@ function supportsNativeXhighEffort(model: Model<"bedrock-converse-stream">): boo
 	);
 }
 
+function isOpenAIGpt5Model(model: Model<"bedrock-converse-stream">): boolean {
+	return getModelMatchCandidates(model.id, model.name).some((candidate) => /(?:^|-)gpt-5-\d/.test(candidate));
+}
+
+function isOpenAIGptOssModel(model: Model<"bedrock-converse-stream">): boolean {
+	return getModelMatchCandidates(model.id, model.name).some((candidate) => candidate.includes("gpt-oss"));
+}
+
 function mapThinkingLevelToEffort(
 	model: Model<"bedrock-converse-stream">,
 	level: SimpleStreamOptions["reasoning"],
@@ -1258,6 +1266,14 @@ function buildAdditionalModelRequestFields(
 		}
 
 		return result;
+	}
+
+	if (isOpenAIGpt5Model(model)) {
+		return { reasoning: { effort: mapThinkingLevelToEffort(model, options.reasoning) } };
+	}
+
+	if (isOpenAIGptOssModel(model)) {
+		return { reasoning_effort: mapThinkingLevelToEffort(model, options.reasoning) };
 	}
 
 	return undefined;

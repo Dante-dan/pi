@@ -9,6 +9,8 @@ interface BedrockThinkingPayload {
 		thinking?: { type: string; budget_tokens?: number; display?: string };
 		output_config?: { effort?: string };
 		anthropic_beta?: string[];
+		reasoning?: { effort?: string };
+		reasoning_effort?: string;
 	};
 }
 
@@ -30,9 +32,10 @@ async function capturePayload(
 	options?: BedrockOptions,
 ): Promise<BedrockThinkingPayload> {
 	let capturedPayload: BedrockThinkingPayload | undefined;
+	const reasoning = Object.hasOwn(options ?? {}, "reasoning") ? options?.reasoning : "high";
 	const s = streamBedrock(model, makeContext(), {
 		...options,
-		reasoning: options?.reasoning ?? "high",
+		reasoning,
 		onPayload: (payload) => {
 			capturedPayload = payload as BedrockThinkingPayload;
 			throw new PayloadCaptured();
@@ -53,6 +56,95 @@ async function capturePayload(
 }
 
 describe("Bedrock thinking payload", () => {
+	it("maps GPT-5.6 reasoning to the nested Bedrock request field", async () => {
+		// Regression for #9331: GPT-5.6 rejects the flat GPT-OSS field.
+		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
+		const model: Model<"bedrock-converse-stream"> = {
+			...baseModel,
+			id: "global.openai.gpt-5.6-sol",
+			name: "GPT-5.6 Sol (Global)",
+			reasoning: true,
+		};
+
+		const payload = await capturePayload(model, { reasoning: "high" });
+
+		expect(payload.additionalModelRequestFields).toEqual({ reasoning: { effort: "high" } });
+	});
+
+	it("uses the GPT-5 model name for opaque application inference profiles", async () => {
+		// Regression for #9331: application inference profile ARNs do not expose the underlying model family.
+		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
+		const model: Model<"bedrock-converse-stream"> = {
+			...baseModel,
+			id: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/example",
+			name: "GPT-5.6 Sol",
+			reasoning: true,
+		};
+
+		const payload = await capturePayload(model, { reasoning: "medium" });
+
+		expect(payload.additionalModelRequestFields).toEqual({ reasoning: { effort: "medium" } });
+	});
+
+	it("preserves the GPT-5.6 catalog xhigh effort", async () => {
+		const model = getModel("amazon-bedrock", "global.openai.gpt-5.6-sol");
+
+		const payload = await capturePayload(model, { reasoning: "xhigh" });
+
+		expect(payload.additionalModelRequestFields).toEqual({ reasoning: { effort: "xhigh" } });
+	});
+
+	it("maps GPT-OSS reasoning to the flat Bedrock request field", async () => {
+		// Regression for #9331: GPT-OSS uses reasoning_effort instead of the GPT-5.6 shape.
+		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
+		const model: Model<"bedrock-converse-stream"> = {
+			...baseModel,
+			id: "openai.gpt-oss-120b-1:0",
+			name: "GPT-OSS 120B",
+			reasoning: true,
+		};
+
+		const payload = await capturePayload(model, { reasoning: "low" });
+
+		expect(payload.additionalModelRequestFields).toEqual({ reasoning_effort: "low" });
+	});
+
+	it("clamps GPT-OSS xhigh reasoning to high", async () => {
+		const model = getModel("amazon-bedrock", "openai.gpt-oss-120b-1:0");
+
+		const payload = await capturePayload(model, { reasoning: "xhigh" });
+
+		expect(payload.additionalModelRequestFields).toEqual({ reasoning_effort: "high" });
+	});
+
+	it("omits additional fields when OpenAI reasoning is not requested", async () => {
+		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
+		const model: Model<"bedrock-converse-stream"> = {
+			...baseModel,
+			id: "global.openai.gpt-5.6-luna",
+			name: "GPT-5.6 Luna (Global)",
+			reasoning: true,
+		};
+
+		const payload = await capturePayload(model, { reasoning: undefined });
+
+		expect(payload.additionalModelRequestFields).toBeUndefined();
+	});
+
+	it("does not send OpenAI fields to unsupported reasoning models", async () => {
+		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
+		const model: Model<"bedrock-converse-stream"> = {
+			...baseModel,
+			id: "custom.reasoning-model-v1",
+			name: "Custom Reasoning Model",
+			reasoning: true,
+		};
+
+		const payload = await capturePayload(model, { reasoning: "high" });
+
+		expect(payload.additionalModelRequestFields).toBeUndefined();
+	});
+
 	it("uses adaptive thinking for Claude Opus 4.8 when reasoning is enabled", async () => {
 		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
 		const model: Model<"bedrock-converse-stream"> = {
