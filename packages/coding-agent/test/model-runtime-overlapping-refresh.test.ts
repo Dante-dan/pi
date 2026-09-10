@@ -81,4 +81,106 @@ describe("issue #8810 overlapping availability refreshes", () => {
 			await Promise.allSettled([first, second]);
 		}
 	});
+
+	it("does not propagate a newer caller's cancellation to an independent older waiter", async () => {
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
+		const originalList = credentials.list.bind(credentials);
+		const firstGate = deferred();
+		const secondGate = deferred();
+		vi.spyOn(credentials, "list")
+			.mockImplementationOnce(async () => {
+				await firstGate.promise;
+				return originalList();
+			})
+			.mockImplementationOnce(async () => {
+				await secondGate.promise;
+				return originalList();
+			});
+		const first = runtime.getAvailable();
+		const controller = new AbortController();
+		const second = runtime.getAvailable(undefined, { signal: controller.signal });
+		const secondRejected = expect(second).rejects.toThrow("cancel newer caller");
+		try {
+			firstGate.resolve();
+			await setImmediate();
+			controller.abort(new Error("cancel newer caller"));
+			secondGate.resolve();
+			await secondRejected;
+			expect((await first).some((model) => model.provider === "anthropic")).toBe(true);
+			expect(runtime.hasConfiguredAuth("anthropic")).toBe(true);
+		} finally {
+			firstGate.resolve();
+			secondGate.resolve();
+			await Promise.allSettled([first, second]);
+		}
+	});
+
+	it("follows the latest successful pass when an intermediate pass fails", async () => {
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
+		const originalList = credentials.list.bind(credentials);
+		const firstGate = deferred();
+		const secondGate = deferred();
+		vi.spyOn(credentials, "list")
+			.mockImplementationOnce(async () => {
+				await firstGate.promise;
+				return originalList();
+			})
+			.mockImplementationOnce(async () => {
+				await secondGate.promise;
+				throw new Error("intermediate pass failed");
+			});
+		const first = runtime.getAvailable();
+		const second = runtime.getAvailable();
+		const secondRejected = expect(second).rejects.toThrow("intermediate pass failed");
+		try {
+			firstGate.resolve();
+			await setImmediate();
+			const newest = await runtime.getAvailable();
+			secondGate.resolve();
+			await secondRejected;
+			expect(await first).toEqual(newest);
+			expect(newest.some((model) => model.provider === "anthropic")).toBe(true);
+		} finally {
+			firstGate.resolve();
+			secondGate.resolve();
+			await Promise.allSettled([first, second]);
+		}
+	});
+
+	it("reports its own recovery failure instead of retrying a persistent failure indefinitely", async () => {
+		const credentials = new InMemoryCredentialStore();
+		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
+		const firstGate = deferred();
+		const secondGate = deferred();
+		const list = vi
+			.spyOn(credentials, "list")
+			.mockImplementationOnce(async () => {
+				await firstGate.promise;
+				return [];
+			})
+			.mockImplementationOnce(async () => {
+				await secondGate.promise;
+				throw new Error("newer pass failed");
+			})
+			.mockRejectedValue(new Error("own recovery failed"));
+		const first = runtime.getAvailable();
+		const second = runtime.getAvailable();
+		const firstRejected = expect(first).rejects.toThrow("own recovery failed");
+		const secondRejected = expect(second).rejects.toThrow("newer pass failed");
+		try {
+			firstGate.resolve();
+			await setImmediate();
+			secondGate.resolve();
+			await Promise.all([firstRejected, secondRejected]);
+			expect(list).toHaveBeenCalledTimes(3);
+		} finally {
+			firstGate.resolve();
+			secondGate.resolve();
+			await Promise.allSettled([first, second]);
+		}
+	});
 });

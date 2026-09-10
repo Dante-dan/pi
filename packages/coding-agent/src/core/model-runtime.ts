@@ -321,15 +321,27 @@ export class ModelRuntime implements Models {
 		}
 		const errorSeq = ++this.availabilityErrorSeq;
 		const effectiveSignal = operationSignal(signal);
-		let refresh = this.runAvailabilityRefresh(seq, errorSeq, effectiveSignal).catch((error) => {
+		const ownRefresh = this.runAvailabilityRefresh(seq, errorSeq, effectiveSignal).catch((error) => {
 			if (errorSeq === this.availabilityErrorSeq && !effectiveSignal.aborted) {
 				this.availabilityError = error instanceof Error ? error.message : String(error);
 			}
 			throw error;
 		});
+		let refresh = ownRefresh;
 		this.availabilityRefresh = refresh;
 		while (true) {
-			await raceWithAbortSignal(refresh, effectiveSignal);
+			try {
+				await raceWithAbortSignal(refresh, effectiveSignal);
+			} catch (error) {
+				effectiveSignal.throwIfAborted();
+				if (refresh === ownRefresh) throw error;
+				if (refresh === this.availabilityRefresh) {
+					// Another caller's failure or cancellation must not fail this caller.
+					// Retry under our own signal so any persistent failure is observed locally.
+					await this.queueAvailabilityRefresh(effectiveSignal);
+					return;
+				}
+			}
 			if (refresh === this.availabilityRefresh) return;
 			// A superseded pass cannot publish its snapshot. Observe the newer pass
 			// without making it wait for an older, potentially stalled operation.
