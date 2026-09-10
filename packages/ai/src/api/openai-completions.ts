@@ -334,6 +334,54 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			timestamp: Date.now(),
 		};
 
+		interface StreamingToolCallBlock extends ToolCall {
+			customInput?: {
+				property: string;
+				jsonBuffer: GrammarToolInputJsonBuffer;
+			};
+			streamIndex?: number;
+		}
+		interface StreamingToolCallArguments {
+			deltas: string[];
+			parsedDeltaCount?: number;
+			parsed?: ToolCall["arguments"];
+		}
+		type StreamingBlock = TextContent | ThinkingContent | StreamingToolCallBlock;
+		type StreamingToolCallDelta = {
+			index?: number;
+			id?: string;
+			type?: string;
+			function?: { name?: string; arguments?: string };
+			custom?: { name?: string; input?: string };
+		};
+		const toolCallArguments = new WeakMap<StreamingToolCallBlock, StreamingToolCallArguments>();
+		const parseToolCallArguments = (block: StreamingToolCallBlock): ToolCall["arguments"] => {
+			const buffered = toolCallArguments.get(block);
+			if (!buffered) return block.arguments;
+			if (buffered.parsedDeltaCount !== buffered.deltas.length) {
+				buffered.parsed = parseStreamingJson(buffered.deltas.join(""));
+				buffered.parsedDeltaCount = buffered.deltas.length;
+			}
+			return buffered.parsed ?? {};
+		};
+		const setToolCallArguments = (block: StreamingToolCallBlock, args: ToolCall["arguments"]): void => {
+			toolCallArguments.delete(block);
+			Object.defineProperty(block, "arguments", {
+				configurable: true,
+				enumerable: true,
+				value: args,
+				writable: true,
+			});
+		};
+		const materializeToolCallArguments = (block: StreamingToolCallBlock): void => {
+			const buffered = toolCallArguments.get(block);
+			if (!buffered) return;
+			// Reparse the provider payload at the terminal boundary. Streaming callers may
+			// mutate or replace the lazy partial value, but those writes never changed the
+			// authoritative provider JSON in the previous eager implementation either.
+			setToolCallArguments(block, parseStreamingJson(buffered.deltas.join("")));
+		};
+
 		// `reasoning_details` are replay metadata, not user-visible stream deltas.
 		// Keep them in memory during streaming and serialize once when the block is finalized.
 		let streamedReasoningDetails: OpenAIReasoningDetail[] | undefined;
@@ -373,23 +421,6 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
-
-			interface StreamingToolCallBlock extends ToolCall {
-				partialArgs?: string;
-				customInput?: {
-					property: string;
-					jsonBuffer: GrammarToolInputJsonBuffer;
-				};
-				streamIndex?: number;
-			}
-			type StreamingBlock = TextContent | ThinkingContent | StreamingToolCallBlock;
-			type StreamingToolCallDelta = {
-				index?: number;
-				id?: string;
-				type?: string;
-				function?: { name?: string; arguments?: string };
-				custom?: { name?: string; input?: string };
-			};
 
 			let textBlock: TextContent | null = null;
 			let thinkingBlock: ThinkingContent | null = null;
@@ -452,11 +483,10 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 							});
 						}
 					} else {
-						block.arguments = parseStreamingJson(block.partialArgs);
+						materializeToolCallArguments(block);
 					}
 					// Finalize in-place and strip the scratch buffers so replay only
 					// carries parsed arguments.
-					delete block.partialArgs;
 					delete block.customInput;
 					delete block.streamIndex;
 					stream.push({
@@ -505,12 +535,27 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 						id: toolCall.id || "",
 						name,
 						arguments: hasCustomInput ? { [customInputProperty]: "" } : {},
-						partialArgs: hasCustomInput ? undefined : "",
 						customInput: hasCustomInput
 							? { property: customInputProperty, jsonBuffer: { input: "", started: false, closed: false } }
 							: undefined,
 						streamIndex,
 					};
+					if (!hasCustomInput) {
+						const functionCallBlock = block;
+						toolCallArguments.set(functionCallBlock, { deltas: [] });
+						Object.defineProperty(functionCallBlock, "arguments", {
+							configurable: true,
+							enumerable: true,
+							get: () => parseToolCallArguments(functionCallBlock),
+							set: (args: ToolCall["arguments"]) => {
+								const buffered = toolCallArguments.get(functionCallBlock);
+								if (buffered) {
+									buffered.parsed = args;
+									buffered.parsedDeltaCount = buffered.deltas.length;
+								}
+							},
+						});
+					}
 					if (streamIndex !== undefined) {
 						toolCallBlocksByIndex.set(streamIndex, block);
 					}
@@ -536,12 +581,11 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				}
 				if (toolCall.custom && !toolCall.function && !block.customInput) {
 					const customInputProperty = grammarToolInputProperties.get(block.name) ?? "input";
-					block.arguments = { [customInputProperty]: "" };
+					setToolCallArguments(block, { [customInputProperty]: "" });
 					block.customInput = {
 						property: customInputProperty,
 						jsonBuffer: { input: "", started: false, closed: false },
 					};
-					delete block.partialArgs;
 				}
 				return block;
 			};
@@ -642,8 +686,10 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 							let delta = "";
 							if (toolCall.function?.arguments) {
 								delta = toolCall.function.arguments;
-								block.partialArgs = (block.partialArgs ?? "") + toolCall.function.arguments;
-								block.arguments = parseStreamingJson(block.partialArgs);
+								const buffered = toolCallArguments.get(block);
+								if (buffered) {
+									buffered.deltas.push(toolCall.function.arguments);
+								}
 							} else if (toolCall.custom?.input) {
 								const nextInput = getCustomToolCallInput(block) + toolCall.custom.input;
 								delta = appendCustomToolCallInput(block, nextInput, false) ?? "";
@@ -698,10 +744,10 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			for (const block of output.content) {
 				if (block.type === "thinking") {
 					applyStreamedReasoningDetails(block);
+				} else if (block.type === "toolCall") {
+					materializeToolCallArguments(block);
 				}
 				delete (block as { index?: number }).index;
-				// Streaming scratch buffers are only used during parsing; never persist them.
-				delete (block as { partialArgs?: string }).partialArgs;
 				delete (block as { customInput?: unknown }).customInput;
 				delete (block as { streamIndex?: number }).streamIndex;
 			}
