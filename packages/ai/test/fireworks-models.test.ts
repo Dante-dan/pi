@@ -136,6 +136,7 @@ describe("Fireworks models", () => {
 		expect(model.compat?.supportsEagerToolInputStreaming).toBe(false);
 		expect(model.compat?.supportsCacheControlOnTools).toBe(false);
 		expect(model.compat?.supportsLongCacheRetention).toBe(false);
+		expect(model.compat?.allowEmptySignature).toBe(true);
 	});
 });
 
@@ -157,6 +158,7 @@ const FIREWORKS_ANTHROPIC_COMPAT = {
 	supportsEagerToolInputStreaming: false,
 	supportsCacheControlOnTools: false,
 	supportsLongCacheRetention: false,
+	allowEmptySignature: true,
 } satisfies NonNullable<Model<"anthropic-messages">["compat"]>;
 
 function createFireworksModel(

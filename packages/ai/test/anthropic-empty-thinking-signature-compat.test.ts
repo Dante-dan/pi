@@ -105,4 +105,16 @@ describe("Anthropic empty thinking signature compat", () => {
 		const assistant = payload.messages?.find((message) => message.role === "assistant");
 		expect(assistant?.content).toEqual([{ type: "thinking", thinking: "internal reasoning", signature: "" }]);
 	});
+
+	it.each(["accounts/fireworks/models/deepseek-v4-flash-0731", "accounts/fireworks/models/kimi-k2p6"] as const)(
+		"allows empty signatures for Fireworks Anthropic-compatible model %s",
+		async (modelId) => {
+			// Regression test for https://github.com/earendil-works/pi/issues/9323
+			const model = getModel("fireworks", modelId);
+			const payload = await capturePayload(model, makeContext("", "internal reasoning", "fireworks", modelId));
+			const assistant = payload.messages?.find((message) => message.role === "assistant");
+			expect(assistant?.content).toEqual([{ type: "thinking", thinking: "internal reasoning", signature: "" }]);
+			expect(model.compat?.allowEmptySignature).toBe(true);
+		},
+	);
 });

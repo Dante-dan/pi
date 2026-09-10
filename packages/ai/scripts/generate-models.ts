@@ -1388,6 +1388,7 @@ function processFireworksModels(provider: ModelsDevProvider | undefined): Model<
 		supportsEagerToolInputStreaming: false,
 		supportsCacheControlOnTools: false,
 		supportsLongCacheRetention: false,
+		allowEmptySignature: true,
 	};
 	const openAICompat: OpenAICompletionsCompat = {
 		supportsStore: false,
