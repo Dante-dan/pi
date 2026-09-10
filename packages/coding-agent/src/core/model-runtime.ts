@@ -146,6 +146,7 @@ export class ModelRuntime implements Models {
 		auth: new Map(),
 	};
 	private availabilityRefreshSeq = 0;
+	private availabilityRefresh: Promise<void> | undefined;
 	private availabilityErrorSeq = 0;
 	private readonly providerAvailabilitySeq = new Map<string, number>();
 	private availabilityError: string | undefined;
@@ -313,19 +314,27 @@ export class ModelRuntime implements Models {
 		if (errorSeq === this.availabilityErrorSeq) this.availabilityError = undefined;
 	}
 
-	private queueAvailabilityRefresh(signal?: AbortSignal): Promise<void> {
+	private async queueAvailabilityRefresh(signal?: AbortSignal): Promise<void> {
 		const seq = ++this.availabilityRefreshSeq;
 		for (const [providerId, providerSeq] of this.providerAvailabilitySeq) {
 			this.providerAvailabilitySeq.set(providerId, providerSeq + 1);
 		}
 		const errorSeq = ++this.availabilityErrorSeq;
 		const effectiveSignal = operationSignal(signal);
-		return this.runAvailabilityRefresh(seq, errorSeq, effectiveSignal).catch((error) => {
+		let refresh = this.runAvailabilityRefresh(seq, errorSeq, effectiveSignal).catch((error) => {
 			if (errorSeq === this.availabilityErrorSeq && !effectiveSignal.aborted) {
 				this.availabilityError = error instanceof Error ? error.message : String(error);
 			}
 			throw error;
 		});
+		this.availabilityRefresh = refresh;
+		while (true) {
+			await raceWithAbortSignal(refresh, effectiveSignal);
+			if (refresh === this.availabilityRefresh) return;
+			// A superseded pass cannot publish its snapshot. Observe the newer pass
+			// without making it wait for an older, potentially stalled operation.
+			refresh = this.availabilityRefresh;
+		}
 	}
 
 	private async refreshProviderAvailability(providerId: string, signal: AbortSignal): Promise<void> {
