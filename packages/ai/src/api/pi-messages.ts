@@ -255,7 +255,7 @@ function createEventConverter(model: Model<"pi-messages">, pendingCalls: Map<Too
 			case "toolcall_delta": {
 				const json = `${toolJson.get(event.contentIndex) ?? ""}${event.delta}`;
 				toolJson.set(event.contentIndex, json);
-				pendingCalls.get(partial.content[event.contentIndex] as ToolCall)!.setJson(json);
+				pendingCalls.get(partial.content[event.contentIndex] as ToolCall)!.appendJson(event.delta);
 				break;
 			}
 			case "toolcall_end": {

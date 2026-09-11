@@ -729,7 +729,7 @@ async function consumeChatStream(
 					? toolCall.function.arguments
 					: JSON.stringify(toolCall.function.arguments || {});
 			block.partialArgs = (block.partialArgs || "") + argsDelta;
-			pendingCalls.get(block)!.setJson(block.partialArgs);
+			pendingCalls.get(block)!.appendJson(argsDelta);
 			stream.push({
 				type: "toolcall_delta",
 				contentIndex: toolBlocksByKey.get(key)!,

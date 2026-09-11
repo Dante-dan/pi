@@ -360,7 +360,7 @@ function processProxyEvent(
 				const block = content as ToolCall & { partialJson: string };
 				block.partialJson += proxyEvent.delta;
 				const pending = pendingCalls.get(proxyEvent.contentIndex)!;
-				pending.setJson(block.partialJson);
+				pending.appendJson(proxyEvent.delta);
 				// Trigger reactivity without reading arguments or losing extra metadata.
 				const copy = pending.copy();
 				pendingCalls.set(proxyEvent.contentIndex, copy);
