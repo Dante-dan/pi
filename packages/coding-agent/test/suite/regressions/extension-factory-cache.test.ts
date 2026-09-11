@@ -8,6 +8,9 @@ import { DefaultResourceLoader } from "../../../src/core/resource-loader.ts";
 interface TestState {
 	moduleLoads?: number;
 	factoryRuns?: number;
+	entryLoads?: number;
+	helperLoads?: number;
+	dependencyLoads?: number;
 }
 
 function state(): TestState {
@@ -35,6 +38,56 @@ export default function () {
 `,
 		"utf-8",
 	);
+}
+
+function writeSideEffectDependency(directory: string): void {
+	mkdirSync(directory, { recursive: true });
+	writeFileSync(
+		join(directory, "package.json"),
+		JSON.stringify({ name: "side-effect-dependency", type: "module", main: "index.js" }),
+		"utf-8",
+	);
+	writeFileSync(
+		join(directory, "index.js"),
+		`
+const state = (globalThis.__extensionFactoryCacheTest ??= {});
+state.dependencyLoads = (state.dependencyLoads ?? 0) + 1;
+export const dependencyLoads = state.dependencyLoads;
+`,
+		"utf-8",
+	);
+}
+
+function writeReloadableExtension(extensionDir: string, dependencySpecifier: string): string {
+	mkdirSync(join(extensionDir, "src"), { recursive: true });
+	writeFileSync(
+		join(extensionDir, "src", "helper.ts"),
+		`
+const state = (globalThis.__extensionFactoryCacheTest ??= {});
+state.helperLoads = (state.helperLoads ?? 0) + 1;
+export const helperLoads = state.helperLoads;
+`,
+		"utf-8",
+	);
+	const extensionPath = join(extensionDir, "src", "index.ts");
+	writeFileSync(
+		extensionPath,
+		`
+import { dependencyLoads } from ${JSON.stringify(dependencySpecifier)};
+import { helperLoads } from "./helper.ts";
+
+const state = (globalThis.__extensionFactoryCacheTest ??= {});
+state.entryLoads = (state.entryLoads ?? 0) + 1;
+
+export default function () {
+	state.factoryRuns = (state.factoryRuns ?? 0) + 1;
+	void dependencyLoads;
+	void helperLoads;
+}
+`,
+		"utf-8",
+	);
+	return extensionPath;
 }
 
 describe("extension factory cache", () => {
@@ -109,6 +162,52 @@ describe("extension factory cache", () => {
 		await loader.reload();
 
 		expect(state().moduleLoads).toBe(2);
+		expect(state().factoryRuns).toBe(2);
+	});
+
+	// Regression test for https://github.com/earendil-works/pi/issues/6108
+	it("reloads extension-owned modules without re-evaluating nested dependencies", async () => {
+		const { root, cwd } = fixture("nested-dependency");
+		const extensionDir = join(root, "extension");
+		mkdirSync(extensionDir, { recursive: true });
+		writeFileSync(
+			join(extensionDir, "package.json"),
+			JSON.stringify({ pi: { extensions: ["src/index.ts"] } }),
+			"utf-8",
+		);
+		writeSideEffectDependency(join(extensionDir, "node_modules", "side-effect-dependency"));
+		const extensionPath = writeReloadableExtension(extensionDir, "side-effect-dependency");
+
+		await loadExtensionsCached([extensionPath], cwd);
+		clearExtensionCache();
+		await loadExtensionsCached([extensionPath], cwd);
+
+		expect(state().entryLoads).toBe(2);
+		expect(state().helperLoads).toBe(2);
+		expect(state().dependencyLoads).toBe(1);
+		expect(state().factoryRuns).toBe(2);
+	});
+
+	// Regression test for https://github.com/earendil-works/pi/issues/6108
+	it("preserves a hoisted scoped dependency for a scoped package extension", async () => {
+		const { root, cwd } = fixture("hoisted-scoped-dependency");
+		const extensionDir = join(root, "node_modules", "@plannotator", "pi-extension");
+		mkdirSync(extensionDir, { recursive: true });
+		writeFileSync(
+			join(extensionDir, "package.json"),
+			JSON.stringify({ pi: { extensions: ["src/index.ts"] } }),
+			"utf-8",
+		);
+		writeSideEffectDependency(join(root, "node_modules", "@pierre", "diffs"));
+		const extensionPath = writeReloadableExtension(extensionDir, "@pierre/diffs");
+
+		await loadExtensionsCached([extensionPath], cwd);
+		clearExtensionCache();
+		await loadExtensionsCached([extensionPath], cwd);
+
+		expect(state().entryLoads).toBe(2);
+		expect(state().helperLoads).toBe(2);
+		expect(state().dependencyLoads).toBe(1);
 		expect(state().factoryRuns).toBe(2);
 	});
 

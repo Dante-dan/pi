@@ -15,6 +15,7 @@ import * as _bundledPiAiProviders from "@earendil-works/pi-ai/providers/all";
 import type { KeyId } from "@earendil-works/pi-tui";
 import * as _bundledPiTui from "@earendil-works/pi-tui";
 import { createJiti } from "jiti/static";
+import { minimatch } from "minimatch";
 // Static imports of packages that extensions may use.
 // These MUST be static so Bun bundles them into the compiled binary.
 // The virtualModules option then makes them available to extensions.
@@ -29,7 +30,7 @@ import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
-import { readPiManifest } from "../pi-manifest.ts";
+import { type PiManifest, readPiManifest } from "../pi-manifest.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
 import type {
@@ -490,16 +491,80 @@ function isCurrentCacheToken(cacheToken: ExtensionCacheToken | undefined): cache
 	);
 }
 
+function manifestOwnsExtensionEntry(manifest: PiManifest, dir: string, extensionPath: string): boolean {
+	return (
+		manifest.extensions?.some((entry) => {
+			const normalizedEntry = entry.replaceAll("\\", "/").replace(/^\.\//, "");
+			const resolvedEntry = path.resolve(dir, entry);
+			if (resolvedEntry === extensionPath) return true;
+
+			const relativePath = path.relative(resolvedEntry, extensionPath);
+			if (relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
+				return true;
+			}
+
+			const manifestRelativePath = path.relative(dir, extensionPath).split(path.sep).join("/");
+			return minimatch(manifestRelativePath, normalizedEntry);
+		}) ?? false
+	);
+}
+
+function getExtensionRoot(extensionPath: string): string {
+	const fallbackRoot = path.dirname(extensionPath);
+	let dir = fallbackRoot;
+
+	while (true) {
+		if (path.basename(dir) === "extensions") return dir;
+
+		const manifest = readPiManifest(path.join(dir, "package.json"));
+		if (manifest && manifestOwnsExtensionEntry(manifest, dir, extensionPath)) return dir;
+
+		const parent = path.dirname(dir);
+		const parentManifest = readPiManifest(path.join(parent, "package.json"));
+		if (parentManifest && manifestOwnsExtensionEntry(parentManifest, parent, extensionPath)) return parent;
+		if (path.basename(parent) === "extensions") return dir;
+		if (parent === dir) return fallbackRoot;
+		dir = parent;
+	}
+}
+
+function invalidateExtensionOwnedModuleCache(extensionPath: string): void {
+	let extensionRoot = getExtensionRoot(extensionPath);
+	try {
+		extensionRoot = fs.realpathSync(extensionRoot);
+	} catch {
+		// Best-effort cache invalidation for paths that may no longer exist.
+	}
+
+	for (const cachedPath of Object.keys(require.cache)) {
+		let normalizedCachedPath = cachedPath;
+		try {
+			normalizedCachedPath = fs.realpathSync(cachedPath);
+		} catch {
+			// Best-effort cache invalidation for paths that may no longer exist.
+		}
+
+		const relativePath = path.relative(extensionRoot, normalizedCachedPath);
+		const isExtensionOwned =
+			relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+		if (isExtensionOwned && !relativePath.split(/[\\/]+/).includes("node_modules")) {
+			delete require.cache[cachedPath];
+		}
+	}
+}
+
 async function loadExtensionModule(extensionPath: string, cacheToken?: ExtensionCacheToken) {
-	if (isCurrentCacheToken(cacheToken)) {
+	const useCache = isCurrentCacheToken(cacheToken);
+	if (useCache) {
 		const cachedFactory = extensionCache.get(extensionPath);
 		if (cachedFactory) {
 			return cachedFactory;
 		}
+		invalidateExtensionOwnedModuleCache(extensionPath);
 	}
 
 	const jiti = createJiti(import.meta.url, {
-		moduleCache: false,
+		moduleCache: useCache,
 		// Compiled binaries and the bundled Node distribution use embedded modules.
 		// Source TypeScript reuses host modules and root tsconfig paths. Unbundled
 		// Node builds use dist aliases.
