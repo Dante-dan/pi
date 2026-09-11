@@ -42,6 +42,53 @@ async function overlapRefreshes(signal?: AbortSignal) {
 
 // Regression coverage for https://github.com/earendil-works/pi/issues/8810.
 describe("issue #8810 overlapping availability refreshes", () => {
+	it("makes an awaited lifecycle refresh follow a registration-triggered pass", async () => {
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
+		const provider = runtime.getProvider("anthropic");
+		expect(provider).toBeDefined();
+		const originalList = credentials.list.bind(credentials);
+		const lifecycleStarted = deferred();
+		const registrationStarted = deferred();
+		const lifecycleGate = deferred();
+		const registrationGate = deferred();
+		vi.spyOn(credentials, "list")
+			.mockImplementationOnce(async () => {
+				const entries = await originalList();
+				lifecycleStarted.resolve();
+				await lifecycleGate.promise;
+				return entries;
+			})
+			.mockImplementationOnce(async () => {
+				const entries = await originalList();
+				registrationStarted.resolve();
+				await registrationGate.promise;
+				return entries;
+			});
+		const lifecycleRefresh = runtime.refresh({ allowNetwork: false });
+		await lifecycleStarted.promise;
+		runtime.registerNativeProvider(provider!);
+		await registrationStarted.promise;
+		let lifecycleReturned = false;
+		void lifecycleRefresh.then(() => {
+			lifecycleReturned = true;
+		});
+		try {
+			lifecycleGate.resolve();
+			await setImmediate();
+			expect(lifecycleReturned).toBe(false);
+			registrationGate.resolve();
+			await lifecycleRefresh;
+			expect(runtime.hasConfiguredAuth("anthropic")).toBe(true);
+			expect(runtime.getAvailableSnapshot().some((model) => model.provider === "anthropic")).toBe(true);
+		} finally {
+			lifecycleGate.resolve();
+			registrationGate.resolve();
+			await lifecycleRefresh;
+		}
+	});
+
 	it("does not return a stale snapshot when a newer availability pass is still running", async () => {
 		const { runtime, first, second, firstGate, secondGate } = await overlapRefreshes();
 		let firstReturned = false;
