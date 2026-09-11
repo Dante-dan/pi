@@ -1,4 +1,5 @@
-/** Type-only compatibility entry point for coding-agent extension OAuth declarations. */
+/** Extension OAuth compatibility entry point. */
+export { oauthErrorHtml, oauthSuccessHtml, renderPage } from "./auth/oauth/oauth-page.ts";
 export type {
 	OAuthAuthInfo,
 	OAuthCredentials,

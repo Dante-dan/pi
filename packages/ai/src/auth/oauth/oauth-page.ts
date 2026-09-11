@@ -9,7 +9,7 @@ function escapeHtml(value: string): string {
 		.replaceAll("'", "&#39;");
 }
 
-function renderPage(options: { title: string; heading: string; message: string; details?: string }): string {
+export function renderPage(options: { title: string; heading: string; message: string; details?: string }): string {
 	const title = escapeHtml(options.title);
 	const heading = escapeHtml(options.heading);
 	const message = escapeHtml(options.message);

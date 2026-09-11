@@ -23,6 +23,27 @@ describe.sequential("OAuthAuth adapters", () => {
 		expect(extensionOAuthCompatibility).not.toHaveProperty("anthropicOAuth");
 	});
 
+	// https://github.com/earendil-works/pi/issues/6930
+	it("exports escaped branded OAuth pages for extensions", () => {
+		const page = extensionOAuthCompatibility.renderPage({
+			title: '<OAuth & "title">',
+			heading: "Provider's callback",
+			message: '<script>alert("unsafe")</script>',
+			details: "token=a&b",
+		});
+
+		expect(page).toContain("&lt;OAuth &amp; &quot;title&quot;&gt;");
+		expect(page).toContain("Provider&#39;s callback");
+		expect(page).toContain("&lt;script&gt;alert(&quot;unsafe&quot;)&lt;/script&gt;");
+		expect(page).toContain("token=a&amp;b");
+		expect(page).not.toContain("<script>alert");
+
+		expect(extensionOAuthCompatibility.oauthSuccessHtml("Signed in <safely>")).toContain("Signed in &lt;safely&gt;");
+		expect(extensionOAuthCompatibility.oauthErrorHtml("Denied", "reason <unsafe>")).toContain(
+			"reason &lt;unsafe&gt;",
+		);
+	});
+
 	afterEach(() => {
 		vi.unstubAllGlobals();
 	});

@@ -69,12 +69,15 @@ describe("extensions discovery", () => {
 		expect(result.extensions).toHaveLength(1);
 	});
 
-	it("keeps the type-only pi-ai OAuth compatibility barrel resolvable", async () => {
+	// https://github.com/earendil-works/pi/issues/6930
+	it("keeps the pi-ai OAuth compatibility barrel resolvable", async () => {
 		fs.writeFileSync(
 			path.join(extensionsDir, "oauth-import.ts"),
 			`
 				import * as oauth from "@earendil-works/pi-ai/oauth";
-				void oauth;
+				if (typeof oauth.renderPage !== "function" || typeof oauth.oauthSuccessHtml !== "function") {
+					throw new Error("OAuth page helpers are unavailable");
+				}
 				export default function(pi) {
 					pi.registerCommand("test", { handler: async () => {} });
 				}
