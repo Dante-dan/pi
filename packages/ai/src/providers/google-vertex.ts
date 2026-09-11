@@ -3,12 +3,10 @@ import type { ApiKeyAuth } from "../auth/types.ts";
 import { createProvider, type Provider } from "../models.ts";
 import { GOOGLE_VERTEX_MODELS } from "./google-vertex.models.ts";
 
-const VERTEX_ADC_PATH = "~/.config/gcloud/application_default_credentials.json";
-
 /**
  * Vertex accepts an explicit API key or Application Default Credentials
- * (`gcloud auth application-default login`). ADC additionally requires
- * project and location env vars, which the implementation reads itself.
+ * (local file, workload identity, or metadata server). ADC additionally
+ * requires project and location env vars, which the implementation reads itself.
  */
 const vertexAuth: ApiKeyAuth = {
 	name: "Google Cloud credentials",
@@ -71,18 +69,14 @@ const vertexAuth: ApiKeyAuth = {
 		const key = credential?.key ?? (await env("GOOGLE_CLOUD_API_KEY"));
 		if (key) return { auth: { apiKey: key }, source: credential?.key ? "stored credential" : "GOOGLE_CLOUD_API_KEY" };
 
-		const adcPath = credential?.env?.GOOGLE_APPLICATION_CREDENTIALS ?? (await env("GOOGLE_APPLICATION_CREDENTIALS"));
-		signal.throwIfAborted();
-		const hasCredentials = await ctx.fileExists(adcPath ?? VERTEX_ADC_PATH);
-		signal.throwIfAborted();
 		const project =
 			credential?.env?.GOOGLE_CLOUD_PROJECT ?? (await env("GOOGLE_CLOUD_PROJECT")) ?? (await env("GCLOUD_PROJECT"));
 		const location = credential?.env?.GOOGLE_CLOUD_LOCATION ?? (await env("GOOGLE_CLOUD_LOCATION"));
-		if (hasCredentials && project && location) {
+		if (project && location) {
 			return {
 				auth: {},
 				env: credential?.env,
-				source: credential ? "stored credential" : "gcloud application default credentials",
+				source: credential ? "stored credential" : "application default credentials",
 			};
 		}
 		return undefined;

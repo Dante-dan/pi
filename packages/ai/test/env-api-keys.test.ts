@@ -113,4 +113,41 @@ describe("environment API keys", () => {
 
 		expect(getEnvApiKey("anthropic")).toBe("api-key");
 	});
+
+	it("resolves Vertex API keys before ADC configuration", () => {
+		// https://github.com/earendil-works/pi/issues/5323
+		expect(
+			getEnvApiKey("google-vertex", {
+				GOOGLE_CLOUD_API_KEY: "vertex-key",
+			}),
+		).toBe("vertex-key");
+	});
+
+	it("reports Vertex ambient ADC from project and location without probing local files", () => {
+		// https://github.com/earendil-works/pi/issues/5323
+		expect(
+			getEnvApiKey("google-vertex", {
+				GOOGLE_CLOUD_PROJECT: "project-id",
+				GOOGLE_CLOUD_LOCATION: "us-central1",
+			}),
+		).toBe("<authenticated>");
+		expect(
+			getEnvApiKey("google-vertex", {
+				GCLOUD_PROJECT: "legacy-project-id",
+				GOOGLE_CLOUD_LOCATION: "us-central1",
+			}),
+		).toBe("<authenticated>");
+	});
+
+	it("requires both a Vertex project and location for ADC", () => {
+		// https://github.com/earendil-works/pi/issues/5323
+		expect(getEnvApiKey("google-vertex", { GOOGLE_CLOUD_PROJECT: "project-id" })).toBeUndefined();
+		expect(getEnvApiKey("google-vertex", { GOOGLE_CLOUD_LOCATION: "us-central1" })).toBeUndefined();
+		expect(
+			getEnvApiKey("google-vertex", {
+				GOOGLE_APPLICATION_CREDENTIALS: "/credentials/service-account.json",
+				GOOGLE_CLOUD_PROJECT: "project-id",
+			}),
+		).toBeUndefined();
+	});
 });

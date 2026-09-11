@@ -255,10 +255,11 @@ describe("builtin providers", () => {
 		});
 	});
 
-	it("resolves vertex via ADC file plus project and location", async () => {
+	it("resolves vertex via ambient ADC with project and location", async () => {
+		// https://github.com/earendil-works/pi/issues/5323
 		const adc = "~/.config/gcloud/application_default_credentials.json";
 		const configured = createModels({
-			authContext: fakeAuthContext({ GOOGLE_CLOUD_PROJECT: "proj", GOOGLE_CLOUD_LOCATION: "us-central1" }, [adc]),
+			authContext: fakeAuthContext({ GOOGLE_CLOUD_PROJECT: "proj", GOOGLE_CLOUD_LOCATION: "us-central1" }),
 		});
 		configured.setProvider(googleVertexProvider());
 		const model = configured.getModels("google-vertex")[0];
