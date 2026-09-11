@@ -84,6 +84,23 @@ describe("pending tool calls", () => {
 		expect(Object.getOwnPropertyDescriptor(block, "arguments")?.get).toBeUndefined();
 	});
 
+	it("materializes provider JSON after a streaming consumer changes the snapshot", () => {
+		const pending = createPendingToolCall(toolCall());
+		const block = pending.toolCall;
+		pending.setJson('{"content":"provider');
+		const partial = block.arguments;
+		partial.content = "mutated";
+		block.arguments = { content: "assigned" };
+
+		pending.finishFromJson();
+
+		expect(block.arguments).toEqual({ content: "provider" });
+		expect(Object.getOwnPropertyDescriptor(block, "arguments")).toMatchObject({
+			value: { content: "provider" },
+			writable: true,
+		});
+	});
+
 	it("keeps interleaved calls independent", () => {
 		const first = createPendingToolCall(toolCall());
 		const second = createPendingToolCall(toolCall());

@@ -365,7 +365,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 	const pendingCalls = new Map<ToolCall, PendingToolCall>();
 	const convertEvent = createEventConverter(model, pendingCalls);
 	const finishPendingCalls = () => {
-		for (const pending of pendingCalls.values()) pending.finish();
+		for (const pending of pendingCalls.values()) pending.finishFromJson();
 		pendingCalls.clear();
 	};
 

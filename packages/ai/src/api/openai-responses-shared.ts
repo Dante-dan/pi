@@ -667,6 +667,7 @@ export async function processResponsesStream<TApi extends Api>(
 				if (!slot || slot.block.partialJson === undefined) continue;
 				const previousPartialJson = slot.block.partialJson;
 				slot.block.partialJson = event.arguments;
+				slot.pending.setJson(event.arguments);
 				slot.block.arguments = parseStreamingJson(slot.block.partialJson);
 
 				if (event.arguments.startsWith(previousPartialJson)) {
@@ -770,7 +771,7 @@ export async function processResponsesStream<TApi extends Api>(
 	} finally {
 		// Covers normal completion and errors from every Responses transport.
 		for (const slot of outputSlots.values()) {
-			if (slot.type === "toolCall") slot.pending.finish();
+			if (slot.type === "toolCall") slot.pending.finishFromJson();
 		}
 	}
 }

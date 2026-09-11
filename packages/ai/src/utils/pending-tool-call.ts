@@ -11,6 +11,7 @@ export interface PendingToolCall<T extends ToolCall = ToolCall> {
 	readonly toolCall: T;
 	setJson(json: string | undefined): void;
 	finish(): void;
+	finishFromJson(): void;
 	copy(): PendingToolCall<T>;
 }
 
@@ -24,18 +25,26 @@ function createPendingView<T extends ToolCall>(
 	fallbackOnFalsy: boolean,
 ): PendingToolCall<T> {
 	let state = initialState;
+	const parseJson = (): ToolCall["arguments"] => {
+		let value = parseStreamingJson<ToolCall["arguments"]>(state.json);
+		if (fallbackOnFalsy) value ||= {};
+		return value;
+	};
+	const materialize = (value: ToolCall["arguments"]): void => {
+		Object.defineProperty(toolCall, "arguments", { value, writable: true, enumerable: true, configurable: true });
+		state = { value };
+	};
 	const toolCall: T = {
 		...initial,
 		get arguments() {
 			if (state.value === undefined) {
-				state.value = parseStreamingJson<ToolCall["arguments"]>(state.json);
-				if (fallbackOnFalsy) state.value ||= {};
+				state.value = parseJson();
 			}
 			return state.value;
 		},
 		set arguments(value: ToolCall["arguments"]) {
 			// Assignments replace this view's value without changing earlier copies.
-			state = { value };
+			state = { ...state, value };
 		},
 	};
 
@@ -45,9 +54,12 @@ function createPendingView<T extends ToolCall>(
 			state = { json, value: undefined };
 		},
 		finish() {
-			const value = toolCall.arguments;
-			Object.defineProperty(toolCall, "arguments", { value, writable: true, enumerable: true, configurable: true });
-			state = { value };
+			materialize(toolCall.arguments);
+		},
+		finishFromJson() {
+			// On interruption, the provider buffer remains authoritative even if a
+			// streaming consumer mutated or replaced the last parsed snapshot.
+			materialize(state.json === undefined ? toolCall.arguments : parseJson());
 		},
 		copy() {
 			// Preserve the proxy's spread semantics for metadata, including symbol keys

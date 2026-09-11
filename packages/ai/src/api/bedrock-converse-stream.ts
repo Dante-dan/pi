@@ -683,7 +683,7 @@ function flushRedactedContent(block: Block): void {
  */
 function finalizeStreamingBlock(block: Block, pendingCalls: Map<ToolCall, PendingToolCall>): void {
 	if (block.type === "toolCall") {
-		pendingCalls.get(block)?.finish();
+		pendingCalls.get(block)?.finishFromJson();
 		pendingCalls.delete(block);
 	}
 	delete block.index;

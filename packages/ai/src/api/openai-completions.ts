@@ -702,7 +702,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			for (const pending of pendingCalls.values()) pending.finish();
+			for (const pending of pendingCalls.values()) pending.finishFromJson();
 			pendingCalls.clear();
 			for (const block of output.content) {
 				if (block.type === "thinking") {

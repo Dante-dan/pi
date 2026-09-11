@@ -255,3 +255,29 @@ describe.each(providers.filter((provider) => provider.name !== "pi-messages"))(
 		);
 	},
 );
+
+it("keeps Responses arguments.done authoritative if the stream fails before output_item.done", async () => {
+	const authoritative = '{"content":"authoritative"}';
+	const result = await streamResponses(
+		model("openai-responses"),
+		{ messages: [] },
+		{
+			apiKey: "test",
+			fetch: async () =>
+				response([
+					{
+						type: "response.output_item.added",
+						output_index: 0,
+						item: { type: "function_call", id: "fc_test", call_id: "call_test", name: "write", arguments: "" },
+					},
+					{ type: "response.function_call_arguments.delta", output_index: 0, delta: '{"content":"stale' },
+					{ type: "response.function_call_arguments.done", output_index: 0, arguments: authoritative },
+					{ type: "error", code: "interrupted", message: "Connection interrupted" },
+				]),
+		},
+	).result();
+
+	expect(result.stopReason).toBe("error");
+	expect(result.content[0]).toMatchObject({ type: "toolCall", arguments: { content: "authoritative" } });
+	expect(Object.getOwnPropertyDescriptor(result.content[0], "arguments")?.get).toBeUndefined();
+});

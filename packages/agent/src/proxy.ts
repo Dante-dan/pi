@@ -113,7 +113,7 @@ export function streamProxy(
 	const stream = createAssistantMessageEventStream();
 	const pendingCalls = new Map<number, PendingToolCall>();
 	const finishPendingCalls = () => {
-		for (const pending of pendingCalls.values()) pending.finish();
+		for (const pending of pendingCalls.values()) pending.finishFromJson();
 		pendingCalls.clear();
 	};
 
