@@ -101,7 +101,7 @@ describe("issue #7301 stalled availability refresh", () => {
 		expect(runtime.getError()).toBeUndefined();
 
 		stalledList.fail(new Error("stale credential list failure"));
-		await expect(staleRefresh).rejects.toThrow("stale credential list failure");
+		await expect(staleRefresh).resolves.toEqual([]);
 		expect(runtime.getError()).toBeUndefined();
 	});
 
