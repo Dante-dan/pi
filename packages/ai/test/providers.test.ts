@@ -278,6 +278,32 @@ describe("builtin providers", () => {
 		keyed.setProvider(googleVertexProvider());
 		expect((await keyed.getAuth(model.provider))?.auth.apiKey).toBe("vertex-key");
 	});
+
+	it("forwards explicit Vertex ADC file configuration without probing the file", async () => {
+		// https://github.com/earendil-works/pi/issues/5323
+		const checkedPaths: string[] = [];
+		const auth = googleVertexProvider().auth.apiKey!;
+		const env = {
+			GOOGLE_APPLICATION_CREDENTIALS: "/credentials/service-account.json",
+			GOOGLE_CLOUD_PROJECT: "project-id",
+			GOOGLE_CLOUD_LOCATION: "us-central1",
+		};
+
+		expect(
+			await auth.resolve({
+				ctx: {
+					env: async () => undefined,
+					fileExists: async (path) => {
+						checkedPaths.push(path);
+						return false;
+					},
+				},
+				credential: { type: "api_key", env },
+				signal: neverAbortedSignal,
+			}),
+		).toMatchObject({ auth: {}, env, source: "stored credential" });
+		expect(checkedPaths).toEqual([]);
+	});
 });
 
 describe("envApiKeyAuth", () => {
