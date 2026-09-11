@@ -40,6 +40,7 @@ async function overlapRefreshes(signal?: AbortSignal) {
 	return { runtime, first, second, firstGate, secondGate };
 }
 
+// Regression coverage for https://github.com/earendil-works/pi/issues/8810.
 describe("issue #8810 overlapping availability refreshes", () => {
 	it("does not return a stale snapshot when a newer availability pass is still running", async () => {
 		const { runtime, first, second, firstGate, secondGate } = await overlapRefreshes();
