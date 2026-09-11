@@ -501,6 +501,79 @@ describe("StdinBuffer", () => {
 			assert.deepStrictEqual(emittedPaste, ["Hello 世界 🎉"]);
 			assert.deepStrictEqual(emittedSequences, []);
 		});
+
+		// Regression test for https://github.com/earendil-works/pi/issues/7321
+		it("should recognize an unmarked multiline paste delivered in one raw batch", () => {
+			processInput("first\r\nsecond\n\t世界");
+
+			assert.deepStrictEqual(emittedPaste, ["first\r\nsecond\n\t世界"]);
+			assert.deepStrictEqual(emittedSequences, []);
+		});
+
+		it("should recognize CR and LF unmarked multiline batches", () => {
+			processInput("first\rsecond");
+			processInput("third\nfourth");
+
+			assert.deepStrictEqual(emittedPaste, ["first\rsecond", "third\nfourth"]);
+			assert.deepStrictEqual(emittedSequences, []);
+		});
+
+		it("should preserve enter and trailing-enter batches as regular input", () => {
+			processInput("\r");
+			processInput("abc");
+			processInput("\r");
+			processInput("def\n");
+			processInput("\r\r");
+			processInput("\r\ttext");
+
+			assert.deepStrictEqual(emittedPaste, []);
+			assert.deepStrictEqual(emittedSequences, [
+				"\r",
+				"a",
+				"b",
+				"c",
+				"\r",
+				"d",
+				"e",
+				"f",
+				"\n",
+				"\r",
+				"\r",
+				"\r",
+				"\t",
+				"t",
+				"e",
+				"x",
+				"t",
+			]);
+		});
+
+		it("should not reinterpret control-sequence batches as unmarked paste", () => {
+			processInput("\x1b\rtext");
+			processInput("\x1b[13;2u\ntext");
+			processInput("\x1b");
+			processInput("\rmore");
+
+			assert.deepStrictEqual(emittedPaste, []);
+			assert.deepStrictEqual(emittedSequences, [
+				"\x1b\r",
+				"t",
+				"e",
+				"x",
+				"t",
+				"\x1b[13;2u",
+				"\n",
+				"t",
+				"e",
+				"x",
+				"t",
+				"\x1b\r",
+				"m",
+				"o",
+				"r",
+				"e",
+			]);
+		});
 	});
 
 	describe("Destroy", () => {

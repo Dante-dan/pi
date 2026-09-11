@@ -275,6 +275,17 @@ export type StdinBufferEventMap = {
 };
 
 /**
+ * Some terminals do not support bracketed paste and deliver an entire paste as
+ * one raw stdin chunk. Recognize only a conservative multiline shape: content
+ * on both sides of a line break, with no terminal control bytes other than
+ * line breaks and tabs mixed in.
+ */
+function isUnmarkedMultilinePaste(data: string): boolean {
+	const firstLineBreak = data.search(/[\r\n]/);
+	return firstLineBreak > 0 && !/[\r\n]$/.test(data) && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(data);
+}
+
+/**
  * Buffers stdin input and emits complete sequences via the 'data' event.
  * Handles partial escape sequences that arrive across multiple chunks.
  */
@@ -316,6 +327,12 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 
 		if (str.length === 0 && this.buffer.length === 0) {
 			this.emitDataSequence("");
+			return;
+		}
+
+		if (!this.pasteMode && this.buffer.length === 0 && isUnmarkedMultilinePaste(str)) {
+			this.pendingKittyPrintableCodepoint = undefined;
+			this.emit("paste", str);
 			return;
 		}
 
