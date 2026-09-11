@@ -773,7 +773,8 @@ describe("AgentSession compaction characterization", () => {
 		);
 	});
 
-	it("compacts successful overflow responses without retrying", async () => {
+	// Regression coverage for #9410: completed overflow does not require another response.
+	it("defers compaction of successful overflow responses until the next prompt", async () => {
 		const harness = await createHarness({
 			settings: { compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 0 } },
 			models: [{ id: "faux-1", contextWindow: 1, maxTokens: 100 }],
@@ -791,17 +792,22 @@ describe("AgentSession compaction characterization", () => {
 			],
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("completed answer")]);
+		harness.setResponses([fauxAssistantMessage("completed answer"), fauxAssistantMessage("next answer")]);
 
 		await expect(harness.session.prompt("hello")).resolves.toBeUndefined();
+		expect(harness.eventsOfType("compaction_start")).toEqual([]);
+		expect(harness.session.isIdle).toBe(true);
+		expect(harness.faux.state.callCount).toBe(1);
 
-		const compactionEnd = harness.eventsOfType("compaction_end").at(-1);
+		await expect(harness.session.prompt("next prompt")).resolves.toBeUndefined();
+
+		const compactionEnd = harness.eventsOfType("compaction_end")[0];
 		expect(compactionEnd).toMatchObject({
 			reason: "overflow",
 			aborted: false,
 			willRetry: false,
 		});
-		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.faux.state.callCount).toBe(2);
 	});
 
 	it("ignores stale pre-compaction assistant usage on pre-prompt checks", async () => {

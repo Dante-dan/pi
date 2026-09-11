@@ -1134,7 +1134,10 @@ export class AgentSession {
 			this._retryAttempt = 0;
 		}
 
-		if (await this._checkCompaction(msg)) {
+		// A completed run can settle without proactive compaction unless an agent_end
+		// handler already queued another request. Interrupted responses still recover.
+		const hasQueuedMessages = this.agent.hasQueuedMessages();
+		if (await this._checkCompaction(msg, !hasQueuedMessages, hasQueuedMessages ? "all" : "recovery-only")) {
 			return true;
 		}
 
@@ -1522,6 +1525,10 @@ export class AgentSession {
 				this.agent.steer(appMessage);
 			}
 		} else if (options?.triggerTurn) {
+			const lastAssistant = this._findLastAssistantMessage();
+			if (lastAssistant) {
+				await this._checkCompaction(lastAssistant, false);
+			}
 			await this._runAgentPrompt(appMessage);
 		} else if (this.isStreaming) {
 			// Appending now would put the message between an assistant tool call and its
@@ -2149,9 +2156,14 @@ export class AgentSession {
 	 *
 	 * @param assistantMessage The assistant message to check
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
+	 * @param mode After a run, only compact when recovering an error or truncated response
 	 * @returns Whether the post-run loop should call `agent.continue()` for overflow recovery or queued messages
 	 */
-	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
+	private async _checkCompaction(
+		assistantMessage: AssistantMessage,
+		skipAbortedCheck = true,
+		mode: "all" | "recovery-only" = "all",
+	): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings(this.model);
 		if (!settings.enabled) return false;
 
@@ -2188,6 +2200,7 @@ export class AgentSession {
 			// Case 2: the response completed successfully. Compact, but do not retry because
 			// agent.continue() cannot continue from a completed assistant response.
 			if (!willRetry) {
+				if (mode === "recovery-only") return false;
 				return await this._runAutoCompaction("overflow", false);
 			}
 
@@ -2222,6 +2235,8 @@ export class AgentSession {
 			}
 			return await this._runAutoCompaction("overflow", willRetry);
 		}
+
+		if (mode === "recovery-only") return false;
 
 		// Case 3: threshold compaction without retry.
 		// For error messages or all-zero usage messages, estimate from the last valid response.
