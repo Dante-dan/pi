@@ -2,6 +2,8 @@ import type {
 	Api,
 	AssistantMessage,
 	AssistantMessageEventStream,
+	AuthInteraction,
+	AuthOperationOptions,
 	AuthResult,
 	Context,
 	Model,
@@ -12,7 +14,7 @@ import type {
 	Provider,
 	ProviderHeaders,
 } from "@earendil-works/pi-ai";
-import type { ModelRuntime } from "./model-runtime.ts";
+import { CredentialSynchronizationError, type ModelRuntime } from "./model-runtime.ts";
 import type { AuthStatus, ProviderConfigInput } from "./provider-composer.ts";
 
 export type { ProviderConfigInput } from "./provider-composer.ts";
@@ -26,6 +28,26 @@ export type ResolvedRequestAuth =
 	  }
 	| { ok: false; error: string };
 export { clearApiKeyCache } from "./provider-composer.ts";
+
+export type ModelRegistryCredentialSynchronizationOperation = "login" | "logout";
+
+/**
+ * A credential was persisted or removed, but the extension-facing model snapshot
+ * could not be synchronized. The committed credential is deliberately omitted so
+ * an extension cannot accidentally log an API key while reporting the error.
+ */
+export class ModelRegistryCredentialSynchronizationError extends Error {
+	readonly providerId: string;
+	readonly operation: ModelRegistryCredentialSynchronizationOperation;
+	readonly credentialCommitted = true;
+
+	constructor(providerId: string, operation: ModelRegistryCredentialSynchronizationOperation) {
+		super(`Credential ${operation} committed for ${providerId}, but local synchronization failed`);
+		this.name = "ModelRegistryCredentialSynchronizationError";
+		this.providerId = providerId;
+		this.operation = operation;
+	}
+}
 
 /**
  * Synchronous compatibility facade exposed to extensions.
@@ -130,6 +152,34 @@ export class ModelRegistry {
 
 	getProviderAuth(provider: string): Promise<AuthResult | undefined> {
 		return this.runtime.getAuth(provider);
+	}
+
+	/** Run the provider's API-key login flow and persist its credential. */
+	async loginApiKey(provider: string, interaction: AuthInteraction): Promise<void> {
+		try {
+			// A provider can be registered immediately before a setup wizard logs in.
+			// Supersede the registration's fire-and-forget refresh so it cannot later
+			// publish a pre-credential availability snapshot over the login result.
+			await this.runtime.refresh({ allowNetwork: false, providers: [provider], signal: interaction.signal });
+			await this.runtime.login(provider, "api_key", interaction);
+		} catch (error) {
+			if (error instanceof CredentialSynchronizationError) {
+				throw new ModelRegistryCredentialSynchronizationError(provider, "login");
+			}
+			throw error;
+		}
+	}
+
+	/** Remove the provider's persisted credential. */
+	async logout(provider: string, options?: AuthOperationOptions): Promise<void> {
+		try {
+			await this.runtime.logout(provider, options);
+		} catch (error) {
+			if (error instanceof CredentialSynchronizationError) {
+				throw new ModelRegistryCredentialSynchronizationError(provider, "logout");
+			}
+			throw error;
+		}
 	}
 
 	async getApiKeyForProvider(provider: string): Promise<string | undefined> {
