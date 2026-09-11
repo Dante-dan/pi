@@ -11,41 +11,32 @@ function deferred() {
 	return { promise, resolve };
 }
 
-async function overlapRefreshes(signal?: AbortSignal) {
+async function runtimeWithAnthropic() {
 	const credentials = new InMemoryCredentialStore();
 	await credentials.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 	const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
-	const originalList = credentials.list.bind(credentials);
-	const firstStarted = deferred();
-	const secondStarted = deferred();
-	const firstGate = deferred();
-	const secondGate = deferred();
-	vi.spyOn(credentials, "list")
-		.mockImplementationOnce(async () => {
-			const entries = await originalList();
-			firstStarted.resolve();
-			await firstGate.promise;
-			return entries;
-		})
-		.mockImplementationOnce(async () => {
-			const entries = await originalList();
-			secondStarted.resolve();
-			await secondGate.promise;
-			return entries;
-		});
-	const first = runtime.getAvailable(undefined, { signal });
-	await firstStarted.promise;
-	const second = runtime.getAvailable();
-	await secondStarted.promise;
-	return { runtime, first, second, firstGate, secondGate };
+	return { credentials, runtime };
 }
 
 // Regression coverage for https://github.com/earendil-works/pi/issues/8810.
 describe("issue #8810 overlapping availability refreshes", () => {
+	it("coalesces same-turn availability requests into the latest pass", async () => {
+		const { credentials, runtime } = await runtimeWithAnthropic();
+		const list = vi.spyOn(credentials, "list");
+
+		const first = runtime.getAvailable();
+		const second = runtime.getAvailable();
+		const third = runtime.getAvailable();
+
+		const [firstModels, secondModels, thirdModels] = await Promise.all([first, second, third]);
+		expect(list).toHaveBeenCalledTimes(1);
+		expect(firstModels).toEqual(secondModels);
+		expect(secondModels).toEqual(thirdModels);
+		expect(thirdModels.some((model) => model.provider === "anthropic")).toBe(true);
+	});
+
 	it("makes an awaited lifecycle refresh follow a registration-triggered pass", async () => {
-		const credentials = new InMemoryCredentialStore();
-		await credentials.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
+		const { credentials, runtime } = await runtimeWithAnthropic();
 		const provider = runtime.getProvider("anthropic");
 		expect(provider).toBeDefined();
 		const originalList = credentials.list.bind(credentials);
@@ -75,11 +66,9 @@ describe("issue #8810 overlapping availability refreshes", () => {
 			lifecycleReturned = true;
 		});
 		try {
-			lifecycleGate.resolve();
-			await setImmediate();
-			expect(lifecycleReturned).toBe(false);
 			registrationGate.resolve();
 			await lifecycleRefresh;
+			expect(lifecycleReturned).toBe(true);
 			expect(runtime.hasConfiguredAuth("anthropic")).toBe(true);
 			expect(runtime.getAvailableSnapshot().some((model) => model.provider === "anthropic")).toBe(true);
 		} finally {
@@ -89,145 +78,156 @@ describe("issue #8810 overlapping availability refreshes", () => {
 		}
 	});
 
-	it("does not return a stale snapshot when a newer availability pass is still running", async () => {
-		const { runtime, first, second, firstGate, secondGate } = await overlapRefreshes();
-		let firstReturned = false;
-		void first.then(() => {
-			firstReturned = true;
+	it("supersedes an older pass when a newer refresh starts preparing models", async () => {
+		const { credentials, runtime } = await runtimeWithAnthropic();
+		await runtime.getAvailable();
+		expect(runtime.hasConfiguredAuth("anthropic")).toBe(true);
+
+		await credentials.delete("anthropic");
+		const originalList = credentials.list.bind(credentials);
+		const staleStarted = deferred();
+		const staleGate = deferred();
+		vi.spyOn(credentials, "list").mockImplementationOnce(async () => {
+			const entries = await originalList();
+			staleStarted.resolve();
+			await staleGate.promise;
+			return entries;
+		});
+		const stale = runtime.getAvailable();
+		await staleStarted.promise;
+
+		await credentials.modify("anthropic", async () => ({ type: "api_key", key: "new-key" }));
+		const internals = runtime as unknown as {
+			models: {
+				refresh: (options: { allowNetwork: boolean }) => Promise<{ aborted: boolean; errors: Map<string, Error> }>;
+			};
+		};
+		const originalRefresh = internals.models.refresh.bind(internals.models);
+		const preparationStarted = deferred();
+		const preparationGate = deferred();
+		vi.spyOn(internals.models, "refresh").mockImplementationOnce(async (options) => {
+			preparationStarted.resolve();
+			await preparationGate.promise;
+			return originalRefresh(options);
+		});
+		const latest = runtime.refresh({ allowNetwork: false });
+		await preparationStarted.promise;
+		let staleReturned = false;
+		void stale.then(() => {
+			staleReturned = true;
 		});
 		try {
-			firstGate.resolve();
+			staleGate.resolve();
 			await setImmediate();
-			expect(firstReturned).toBe(false);
-			secondGate.resolve();
-			const [firstModels, secondModels] = await Promise.all([first, second]);
-			expect(firstModels).toEqual(secondModels);
-			expect(firstModels.some((model) => model.provider === "anthropic")).toBe(true);
+			expect(staleReturned).toBe(false);
 			expect(runtime.hasConfiguredAuth("anthropic")).toBe(true);
+
+			preparationGate.resolve();
+			await latest;
+			expect((await stale).some((model) => model.provider === "anthropic")).toBe(true);
 		} finally {
-			firstGate.resolve();
-			secondGate.resolve();
-			await Promise.allSettled([first, second]);
+			staleGate.resolve();
+			preparationGate.resolve();
+			await Promise.allSettled([stale, latest]);
 		}
 	});
 
-	it("allows an older waiter to cancel without cancelling the newer pass", async () => {
-		const controller = new AbortController();
-		const { runtime, first, second, firstGate, secondGate } = await overlapRefreshes(controller.signal);
-		try {
-			firstGate.resolve();
-			await setImmediate();
-			const rejected = expect(first).rejects.toThrow("cancel old waiter");
-			controller.abort(new Error("cancel old waiter"));
-			await rejected;
-			secondGate.resolve();
-			expect((await second).some((model) => model.provider === "anthropic")).toBe(true);
-			expect(runtime.hasConfiguredAuth("anthropic")).toBe(true);
-		} finally {
-			firstGate.resolve();
-			secondGate.resolve();
-			await Promise.allSettled([first, second]);
-		}
-	});
-
-	it("does not propagate a newer caller's cancellation to an independent older waiter", async () => {
-		const credentials = new InMemoryCredentialStore();
-		await credentials.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
+	it("does not wait for a stalled superseded pass or publish its result", async () => {
+		const { credentials, runtime } = await runtimeWithAnthropic();
 		const originalList = credentials.list.bind(credentials);
+		const firstStarted = deferred();
 		const firstGate = deferred();
-		const secondGate = deferred();
+		const firstEntries = await originalList();
 		vi.spyOn(credentials, "list")
 			.mockImplementationOnce(async () => {
-				await firstGate.promise;
-				return originalList();
-			})
-			.mockImplementationOnce(async () => {
-				await secondGate.promise;
-				return originalList();
-			});
-		const first = runtime.getAvailable();
-		const controller = new AbortController();
-		const second = runtime.getAvailable(undefined, { signal: controller.signal });
-		const secondRejected = expect(second).rejects.toThrow("cancel newer caller");
-		try {
-			firstGate.resolve();
-			await setImmediate();
-			controller.abort(new Error("cancel newer caller"));
-			secondGate.resolve();
-			await secondRejected;
-			expect((await first).some((model) => model.provider === "anthropic")).toBe(true);
-			expect(runtime.hasConfiguredAuth("anthropic")).toBe(true);
-		} finally {
-			firstGate.resolve();
-			secondGate.resolve();
-			await Promise.allSettled([first, second]);
-		}
-	});
-
-	it("follows the latest successful pass when an intermediate pass fails", async () => {
-		const credentials = new InMemoryCredentialStore();
-		await credentials.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
-		const originalList = credentials.list.bind(credentials);
-		const firstGate = deferred();
-		const secondGate = deferred();
-		vi.spyOn(credentials, "list")
-			.mockImplementationOnce(async () => {
-				await firstGate.promise;
-				return originalList();
-			})
-			.mockImplementationOnce(async () => {
-				await secondGate.promise;
-				throw new Error("intermediate pass failed");
-			});
-		const first = runtime.getAvailable();
-		const second = runtime.getAvailable();
-		const secondRejected = expect(second).rejects.toThrow("intermediate pass failed");
-		try {
-			firstGate.resolve();
-			await setImmediate();
-			const newest = await runtime.getAvailable();
-			secondGate.resolve();
-			await secondRejected;
-			expect(await first).toEqual(newest);
-			expect(newest.some((model) => model.provider === "anthropic")).toBe(true);
-		} finally {
-			firstGate.resolve();
-			secondGate.resolve();
-			await Promise.allSettled([first, second]);
-		}
-	});
-
-	it("reports its own recovery failure instead of retrying a persistent failure indefinitely", async () => {
-		const credentials = new InMemoryCredentialStore();
-		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
-		const firstGate = deferred();
-		const secondGate = deferred();
-		const list = vi
-			.spyOn(credentials, "list")
-			.mockImplementationOnce(async () => {
+				firstStarted.resolve();
 				await firstGate.promise;
 				return [];
 			})
-			.mockImplementationOnce(async () => {
-				await secondGate.promise;
-				throw new Error("newer pass failed");
-			})
-			.mockRejectedValue(new Error("own recovery failed"));
+			.mockResolvedValueOnce(firstEntries);
 		const first = runtime.getAvailable();
+		await firstStarted.promise;
 		const second = runtime.getAvailable();
-		const firstRejected = expect(first).rejects.toThrow("own recovery failed");
-		const secondRejected = expect(second).rejects.toThrow("newer pass failed");
 		try {
+			const [firstModels, secondModels] = await Promise.all([first, second]);
+			expect(firstModels).toEqual(secondModels);
+			expect(secondModels.some((model) => model.provider === "anthropic")).toBe(true);
+			expect(runtime.hasConfiguredAuth("anthropic")).toBe(true);
+
 			firstGate.resolve();
 			await setImmediate();
-			secondGate.resolve();
-			await Promise.all([firstRejected, secondRejected]);
-			expect(list).toHaveBeenCalledTimes(3);
+			expect(runtime.hasConfiguredAuth("anthropic")).toBe(true);
+			expect(runtime.getAvailableSnapshot()).toEqual(secondModels);
 		} finally {
 			firstGate.resolve();
-			secondGate.resolve();
+			await Promise.allSettled([first, second]);
+		}
+	});
+
+	it("does not let the latest caller cancel the shared pass for older waiters", async () => {
+		const { credentials, runtime } = await runtimeWithAnthropic();
+		const originalList = credentials.list.bind(credentials);
+		const firstStarted = deferred();
+		const latestStarted = deferred();
+		const firstGate = deferred();
+		const latestGate = deferred();
+		vi.spyOn(credentials, "list")
+			.mockImplementationOnce(async () => {
+				firstStarted.resolve();
+				await firstGate.promise;
+				return originalList();
+			})
+			.mockImplementationOnce(async () => {
+				latestStarted.resolve();
+				await latestGate.promise;
+				return originalList();
+			});
+		const follower = runtime.getAvailable();
+		await firstStarted.promise;
+		const controller = new AbortController();
+		const latestCaller = runtime.getAvailable(undefined, { signal: controller.signal });
+		await latestStarted.promise;
+		const rejection = expect(latestCaller).rejects.toThrow("stop waiting");
+		let followerReturned = false;
+		void follower.then(() => {
+			followerReturned = true;
+		});
+		controller.abort(new Error("stop waiting"));
+		try {
+			await rejection;
+			await setImmediate();
+			expect(followerReturned).toBe(false);
+			latestGate.resolve();
+			expect((await follower).some((model) => model.provider === "anthropic")).toBe(true);
+		} finally {
+			firstGate.resolve();
+			latestGate.resolve();
+			await Promise.allSettled([latestCaller, follower]);
+		}
+	});
+
+	it("makes all waiters observe the latest pass failure", async () => {
+		const { credentials, runtime } = await runtimeWithAnthropic();
+		const firstStarted = deferred();
+		const firstGate = deferred();
+		vi.spyOn(credentials, "list")
+			.mockImplementationOnce(async () => {
+				firstStarted.resolve();
+				await firstGate.promise;
+				return [];
+			})
+			.mockRejectedValueOnce(new Error("latest pass failed"));
+		const first = runtime.getAvailable();
+		await firstStarted.promise;
+		const second = runtime.getAvailable();
+		try {
+			await Promise.all([
+				expect(first).rejects.toThrow("latest pass failed"),
+				expect(second).rejects.toThrow("latest pass failed"),
+			]);
+			expect(runtime.getError()).toContain("latest pass failed");
+		} finally {
+			firstGate.resolve();
 			await Promise.allSettled([first, second]);
 		}
 	});

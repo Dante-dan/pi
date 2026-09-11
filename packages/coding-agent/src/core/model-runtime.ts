@@ -63,6 +63,13 @@ interface ModelRuntimeSnapshot {
 	auth: ReadonlyMap<string, AuthCheck | undefined>;
 }
 
+interface AvailabilityRefresh {
+	controller: AbortController;
+	fail(error: unknown): void;
+	promise: Promise<void>;
+	start(): void;
+}
+
 export interface CreateModelRuntimeOptions {
 	/** Credential storage. Defaults to the file at authPath. */
 	credentials?: CredentialStore;
@@ -146,7 +153,7 @@ export class ModelRuntime implements Models {
 		auth: new Map(),
 	};
 	private availabilityRefreshSeq = 0;
-	private availabilityRefresh: Promise<void> | undefined;
+	private availabilityRefresh: AvailabilityRefresh | undefined;
 	private availabilityErrorSeq = 0;
 	private readonly providerAvailabilitySeq = new Map<string, number>();
 	private availabilityError: string | undefined;
@@ -314,39 +321,61 @@ export class ModelRuntime implements Models {
 		if (errorSeq === this.availabilityErrorSeq) this.availabilityError = undefined;
 	}
 
-	private async queueAvailabilityRefresh(signal?: AbortSignal): Promise<void> {
+	private beginAvailabilityRefresh(): AvailabilityRefresh {
 		const seq = ++this.availabilityRefreshSeq;
 		for (const [providerId, providerSeq] of this.providerAvailabilitySeq) {
 			this.providerAvailabilitySeq.set(providerId, providerSeq + 1);
 		}
 		const errorSeq = ++this.availabilityErrorSeq;
-		const effectiveSignal = operationSignal(signal);
-		const ownRefresh = this.runAvailabilityRefresh(seq, errorSeq, effectiveSignal).catch((error) => {
-			if (errorSeq === this.availabilityErrorSeq && !effectiveSignal.aborted) {
+		const previous = this.availabilityRefresh;
+		const controller = new AbortController();
+		let start = () => {};
+		let fail = (_error: unknown) => {};
+		const ready = new Promise<void>((resolve, reject) => {
+			start = resolve;
+			fail = reject;
+		});
+		const task = raceWithAbortSignal(ready, controller.signal).then(() => {
+			controller.signal.throwIfAborted();
+			return this.runAvailabilityRefresh(seq, errorSeq, controller.signal);
+		});
+		const promise = raceWithAbortSignal(task, controller.signal).catch((error) => {
+			if (errorSeq === this.availabilityErrorSeq && !controller.signal.aborted) {
 				this.availabilityError = error instanceof Error ? error.message : String(error);
 			}
 			throw error;
 		});
-		let refresh = ownRefresh;
+		// A public refresh may still be preparing model catalogs when it is superseded.
+		// Observe its availability promise until that caller reaches the wait phase.
+		void promise.catch(() => {});
+		const refresh = { controller, fail, promise, start };
 		this.availabilityRefresh = refresh;
+		previous?.controller.abort();
+		return refresh;
+	}
+
+	private async waitForAvailabilityRefresh(signal?: AbortSignal): Promise<void> {
+		const effectiveSignal = operationSignal(signal);
 		while (true) {
+			const current = this.availabilityRefresh;
+			if (!current) return;
 			try {
-				await raceWithAbortSignal(refresh, effectiveSignal);
+				await raceWithAbortSignal(current.promise, effectiveSignal);
 			} catch (error) {
 				effectiveSignal.throwIfAborted();
-				if (refresh === ownRefresh) throw error;
-				if (refresh === this.availabilityRefresh) {
-					// Another caller's failure or cancellation must not fail this caller.
-					// Retry under our own signal so any persistent failure is observed locally.
-					await this.queueAvailabilityRefresh(effectiveSignal);
-					return;
-				}
+				if (current === this.availabilityRefresh) throw error;
 			}
-			if (refresh === this.availabilityRefresh) return;
-			// A superseded pass cannot publish its snapshot. Observe the newer pass
-			// without making it wait for an older, potentially stalled operation.
-			refresh = this.availabilityRefresh;
+			if (current === this.availabilityRefresh) return;
+			// A superseded caller follows the latest shared pass. The caller's signal
+			// only controls its own wait, not the refresh needed by other callers.
 		}
+	}
+
+	private queueAvailabilityRefresh(signal?: AbortSignal): Promise<void> {
+		signal?.throwIfAborted();
+		const refresh = this.beginAvailabilityRefresh();
+		refresh.start();
+		return this.waitForAvailabilityRefresh(signal);
 	}
 
 	private async refreshProviderAvailability(providerId: string, signal: AbortSignal): Promise<void> {
@@ -717,46 +746,54 @@ export class ModelRuntime implements Models {
 	}
 
 	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {
-		this.config = await ModelConfig.load(this.modelsPath);
-		this.configureRadiusProviders();
-		if (options.providers) {
-			for (const providerId of new Set(options.providers)) this.recomposeProvider(providerId);
-			this.updateModelSnapshot();
-		} else {
-			this.rebuildProviders();
-		}
-		const refreshOptions = {
-			...options,
-			allowNetwork: options.allowNetwork ?? this.modelNetworkEnabled,
-		};
-		// Published pi-ai builds before ModelsStore returned void and accepted a provider ID.
-		// The fallback keeps source-mode CLI tests working without rebuilding workspace dependencies.
-		const result = ((await this.models.refresh(refreshOptions)) as ModelsRefreshResult | undefined) ?? {
-			aborted: refreshOptions.signal?.aborted ?? false,
-			errors: new Map(),
-		};
-		const errors = new Map(result.errors);
-		this.updateModelSnapshot();
-		if (options.providers) {
-			await Promise.all(
-				[...new Set(options.providers)].map(async (providerId) => {
-					try {
-						await this.refreshProviderAvailability(providerId, operationSignal(options.signal));
-					} catch (error) {
-						if (!options.signal?.aborted) {
-							errors.set(providerId, error instanceof Error ? error : new Error(String(error)));
-						}
-					}
-				}),
-			);
-		} else {
-			try {
-				await this.queueAvailabilityRefresh(options.signal);
-			} catch {
-				// Availability errors are recorded by the latest pass; refreshed models remain usable.
+		const availabilityRefresh =
+			!options.providers && !options.signal?.aborted ? this.beginAvailabilityRefresh() : undefined;
+		try {
+			this.config = await ModelConfig.load(this.modelsPath);
+			this.configureRadiusProviders();
+			if (options.providers) {
+				for (const providerId of new Set(options.providers)) this.recomposeProvider(providerId);
+				this.updateModelSnapshot();
+			} else {
+				this.rebuildProviders();
 			}
+			const refreshOptions = {
+				...options,
+				allowNetwork: options.allowNetwork ?? this.modelNetworkEnabled,
+			};
+			// Published pi-ai builds before ModelsStore returned void and accepted a provider ID.
+			// The fallback keeps source-mode CLI tests working without rebuilding workspace dependencies.
+			const result = ((await this.models.refresh(refreshOptions)) as ModelsRefreshResult | undefined) ?? {
+				aborted: refreshOptions.signal?.aborted ?? false,
+				errors: new Map(),
+			};
+			const errors = new Map(result.errors);
+			this.updateModelSnapshot();
+			if (options.providers) {
+				await Promise.all(
+					[...new Set(options.providers)].map(async (providerId) => {
+						try {
+							await this.refreshProviderAvailability(providerId, operationSignal(options.signal));
+						} catch (error) {
+							if (!options.signal?.aborted) {
+								errors.set(providerId, error instanceof Error ? error : new Error(String(error)));
+							}
+						}
+					}),
+				);
+			} else if (availabilityRefresh) {
+				availabilityRefresh.start();
+				try {
+					await this.waitForAvailabilityRefresh(options.signal);
+				} catch {
+					// Availability errors are recorded by the latest pass; refreshed models remain usable.
+				}
+			}
+			return { aborted: result.aborted || (options.signal?.aborted ?? false), errors };
+		} catch (error) {
+			availabilityRefresh?.fail(error);
+			throw error;
 		}
-		return { aborted: result.aborted || (options.signal?.aborted ?? false), errors };
 	}
 
 	registerNativeProvider(provider: Provider): void {
