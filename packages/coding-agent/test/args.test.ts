@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { normalizeSessionName, parseArgs } from "../src/cli/args.ts";
 
@@ -232,6 +233,13 @@ describe("parseArgs", () => {
 	});
 
 	describe("--no-extensions flag", () => {
+		// Regression test for https://github.com/earendil-works/pi/issues/9205
+		test("RPC extension UI example uses the supported flag", () => {
+			const source = readFileSync(new URL("../examples/rpc-extension-ui.ts", import.meta.url), "utf8");
+			expect(source).toContain('"--no-extensions"');
+			expect(source).not.toContain('"--no-extension"');
+		});
+
 		test("parses --no-extensions flag", () => {
 			const result = parseArgs(["--no-extensions"]);
 			expect(result.noExtensions).toBe(true);
