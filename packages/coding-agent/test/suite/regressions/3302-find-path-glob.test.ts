@@ -26,6 +26,7 @@ describe("issue #3302 find returns no results for path-based glob patterns", () 
 		writeFileSync(join(tempRoot, "some", "parent", "child", "file.ext"), "");
 		writeFileSync(join(tempRoot, "some", "parent", "child", "test.spec.ts"), "");
 		writeFileSync(join(tempRoot, "src", "foo", "bar", "example.spec.ts"), "");
+		writeFileSync(join(tempRoot, "literal*.txt"), "");
 	});
 
 	afterEach(() => {
@@ -68,5 +69,23 @@ describe("issue #3302 find returns no results for path-based glob patterns", () 
 	it("src/**/*.spec.ts matches nested spec file", async () => {
 		const files = await runFind("src/**/*.spec.ts");
 		expect(files).toEqual(["src/foo/bar/example.spec.ts"]);
+	});
+
+	it.runIf(process.platform === "win32")("matches path globs with Windows separators", async () => {
+		// Regression test for https://github.com/earendil-works/pi/issues/9262
+		const files = await runFind(String.raw`src\**\*.spec.ts`);
+		expect(files).toEqual(["src/foo/bar/example.spec.ts"]);
+	});
+
+	it.runIf(process.platform === "win32")("matches path globs with mixed separators", async () => {
+		// Regression test for https://github.com/earendil-works/pi/issues/9262
+		const files = await runFind(String.raw`src\**/*.spec.ts`);
+		expect(files).toEqual(["src/foo/bar/example.spec.ts"]);
+	});
+
+	it.runIf(process.platform !== "win32")("preserves backslashes as glob escapes on POSIX", async () => {
+		// Regression test for https://github.com/earendil-works/pi/issues/9262
+		const files = await runFind(String.raw`literal\*.txt`);
+		expect(files).toEqual(["literal*.txt"]);
 	});
 });

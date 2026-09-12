@@ -202,10 +202,17 @@ export function createFindToolDefinition(
 						// mode it matches against the absolute candidate path, so a path-containing
 						// pattern like 'src/**/*.spec.ts' needs a leading '**/' to match anything.
 						let effectivePattern = pattern;
-						if (pattern.includes("/")) {
+						const hasPathSeparator =
+							pattern.includes("/") || (process.platform === "win32" && pattern.includes("\\"));
+						if (hasPathSeparator) {
 							args.push("--full-path");
-							if (!pattern.startsWith("/") && !pattern.startsWith("**/") && pattern !== "**") {
-								effectivePattern = `**/${pattern}`;
+							if (process.platform === "win32") effectivePattern = effectivePattern.replaceAll("\\", "/");
+							if (
+								!effectivePattern.startsWith("/") &&
+								!effectivePattern.startsWith("**/") &&
+								effectivePattern !== "**"
+							) {
+								effectivePattern = `**/${effectivePattern}`;
 							}
 							// fd matches full paths using native separators on Windows.
 							if (process.platform === "win32")
