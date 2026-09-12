@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openaiCodexOAuth } from "../src/auth/oauth/openai-codex.ts";
+import type { OAuthCallbackPageOptions } from "../src/auth/types.ts";
 
 const neverAbortedSignal = new AbortController().signal;
+const nativeFetch = globalThis.fetch;
 
 function jsonResponse(body: unknown, status: number = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -259,6 +261,61 @@ describe("OpenAI Codex OAuth", () => {
 				verificationUri: "https://auth.openai.com/codex/device",
 				intervalSeconds: 5,
 				expiresInSeconds: 900,
+			},
+		]);
+	});
+
+	it("uses an opt-in callback page renderer for browser login", async () => {
+		// Regression test for https://github.com/earendil-works/pi/issues/5372
+		const accessToken = createAccessToken("account-browser");
+		const renderedPages: OAuthCallbackPageOptions[] = [];
+		let callbackResponse: Promise<Response> | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown): Promise<Response> => {
+				if (getUrl(input) !== "https://auth.openai.com/oauth/token") {
+					return nativeFetch(input as string | URL | Request);
+				}
+				return jsonResponse({ access_token: accessToken, refresh_token: "refresh-token", expires_in: 3600 });
+			}),
+		);
+
+		const credentials = await openaiCodexOAuth.login({
+			signal: neverAbortedSignal,
+			renderCallbackPage: (options) => {
+				renderedPages.push(options);
+				return `<h1>${options.heading}</h1><p>${options.message}</p>`;
+			},
+			prompt: (prompt) => {
+				if (prompt.type === "select") return Promise.resolve("browser");
+				return new Promise<string>(() => {});
+			},
+			notify: (event) => {
+				if (event.type !== "auth_url") return;
+				const authUrl = new URL(event.url);
+				const callbackUrl = new URL(authUrl.searchParams.get("redirect_uri") ?? "");
+				callbackUrl.hostname = "127.0.0.1";
+				callbackUrl.searchParams.set("code", "browser-code");
+				callbackUrl.searchParams.set("state", authUrl.searchParams.get("state") ?? "");
+				callbackResponse = nativeFetch(callbackUrl);
+			},
+		});
+
+		expect(credentials).toMatchObject({
+			access: accessToken,
+			refresh: "refresh-token",
+			accountId: "account-browser",
+		});
+		const response = await callbackResponse;
+		expect(response?.status).toBe(200);
+		expect(await response?.text()).toBe(
+			"<h1>Authentication successful</h1><p>OpenAI authentication completed. You can close this window.</p>",
+		);
+		expect(renderedPages).toEqual([
+			{
+				title: "Authentication successful",
+				heading: "Authentication successful",
+				message: "OpenAI authentication completed. You can close this window.",
 			},
 		]);
 	});

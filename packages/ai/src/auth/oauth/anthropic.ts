@@ -7,7 +7,7 @@
 
 import type { Server } from "node:http";
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
-import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
+import type { OAuthAuth, OAuthCallbackPageRenderer, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.ts";
 import { generatePKCE } from "./pkce.ts";
 
@@ -96,7 +96,10 @@ function formatErrorDetails(error: unknown): string {
 	return String(error);
 }
 
-async function startCallbackServer(expectedState: string): Promise<CallbackServerInfo> {
+async function startCallbackServer(
+	expectedState: string,
+	renderCallbackPage?: OAuthCallbackPageRenderer,
+): Promise<CallbackServerInfo> {
 	const { createServer } = await getNodeApis();
 
 	return new Promise((resolve, reject) => {
@@ -115,7 +118,7 @@ async function startCallbackServer(expectedState: string): Promise<CallbackServe
 				const url = new URL(req.url || "", "http://localhost");
 				if (url.pathname !== CALLBACK_PATH) {
 					res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
-					res.end(oauthErrorHtml("Callback route not found."));
+					res.end(oauthErrorHtml("Callback route not found.", undefined, renderCallbackPage));
 					return;
 				}
 
@@ -125,24 +128,28 @@ async function startCallbackServer(expectedState: string): Promise<CallbackServe
 
 				if (error) {
 					res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-					res.end(oauthErrorHtml("Anthropic authentication did not complete.", `Error: ${error}`));
+					res.end(
+						oauthErrorHtml("Anthropic authentication did not complete.", `Error: ${error}`, renderCallbackPage),
+					);
 					return;
 				}
 
 				if (!code || !state) {
 					res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-					res.end(oauthErrorHtml("Missing code or state parameter."));
+					res.end(oauthErrorHtml("Missing code or state parameter.", undefined, renderCallbackPage));
 					return;
 				}
 
 				if (state !== expectedState) {
 					res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-					res.end(oauthErrorHtml("State mismatch."));
+					res.end(oauthErrorHtml("State mismatch.", undefined, renderCallbackPage));
 					return;
 				}
 
 				res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-				res.end(oauthSuccessHtml("Anthropic authentication completed. You can close this window."));
+				res.end(
+					oauthSuccessHtml("Anthropic authentication completed. You can close this window.", renderCallbackPage),
+				);
 				settleWait?.({ code, state });
 			} catch {
 				res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
@@ -233,7 +240,7 @@ async function exchangeAuthorizationCode(
 
 async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
 	const { verifier, challenge } = await generatePKCE();
-	const server = await startCallbackServer(verifier);
+	const server = await startCallbackServer(verifier, interaction.renderCallbackPage);
 	const manualAbort = new AbortController();
 	const onAbort = () => server.cancelWait();
 	interaction.signal.addEventListener("abort", onAbort, { once: true });

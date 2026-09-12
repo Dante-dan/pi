@@ -18,7 +18,7 @@ if (typeof process !== "undefined" && (process.versions?.node || process.version
 }
 
 import { normalizeRadiusGatewayUrl } from "../../providers/radius-config.ts";
-import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
+import type { OAuthAuth, OAuthCallbackPageRenderer, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
 import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.ts";
 import { generatePKCE } from "./pkce.ts";
@@ -144,7 +144,11 @@ type OAuthCallbackServer = {
 	close(): void;
 };
 
-function startOAuthCallbackServer(expectedState: string, signal: AbortSignal): Promise<OAuthCallbackServer> {
+function startOAuthCallbackServer(
+	expectedState: string,
+	signal: AbortSignal,
+	renderCallbackPage?: OAuthCallbackPageRenderer,
+): Promise<OAuthCallbackServer> {
 	if (!_http) {
 		throw new Error("Radius OAuth is only available in Node.js environments");
 	}
@@ -174,28 +178,36 @@ function startOAuthCallbackServer(expectedState: string, signal: AbortSignal): P
 	const server = _http.createServer((request, response) => {
 		const url = new URL(request.url ?? "/", REDIRECT_URI);
 		if (url.pathname !== CALLBACK_PATH) {
-			sendPage(response, 404, oauthErrorHtml("Callback route not found."));
+			sendPage(response, 404, oauthErrorHtml("Callback route not found.", undefined, renderCallbackPage));
 			return;
 		}
 		if (url.searchParams.get("state") !== expectedState) {
-			sendPage(response, 400, oauthErrorHtml("OAuth state mismatch."));
+			sendPage(response, 400, oauthErrorHtml("OAuth state mismatch.", undefined, renderCallbackPage));
 			return;
 		}
 
 		const error = url.searchParams.get("error");
 		if (error) {
-			sendPage(response, 400, oauthErrorHtml(url.searchParams.get("error_description") ?? error));
+			sendPage(
+				response,
+				400,
+				oauthErrorHtml(url.searchParams.get("error_description") ?? error, undefined, renderCallbackPage),
+			);
 			finish(null);
 			return;
 		}
 
 		const code = url.searchParams.get("code");
 		if (!code) {
-			sendPage(response, 400, oauthErrorHtml("Missing authorization code."));
+			sendPage(response, 400, oauthErrorHtml("Missing authorization code.", undefined, renderCallbackPage));
 			return;
 		}
 
-		sendPage(response, 200, oauthSuccessHtml("Signed in to Radius. You may now close this page."));
+		sendPage(
+			response,
+			200,
+			oauthSuccessHtml("Signed in to Radius. You may now close this page.", renderCallbackPage),
+		);
 		finish(code);
 	});
 
@@ -236,7 +248,7 @@ async function loginWithBrowser(
 		state,
 	}).toString();
 
-	const callbackServer = await startOAuthCallbackServer(state, interaction.signal);
+	const callbackServer = await startOAuthCallbackServer(state, interaction.signal, interaction.renderCallbackPage);
 	interaction.notify({ type: "progress", message: `Listening for OAuth callback on ${REDIRECT_URI}` });
 	interaction.notify({
 		type: "auth_url",

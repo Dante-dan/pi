@@ -1,4 +1,4 @@
-import type { OAuthCredentials } from "../auth/types.ts";
+import type { OAuthCallbackPageRenderer, OAuthCredentials } from "../auth/types.ts";
 
 /** Legacy extension OAuth prompt. */
 export interface OAuthPrompt {
@@ -39,6 +39,8 @@ export interface OAuthLoginCallbacks {
 	onProgress?(message: string): void;
 	onManualCodeInput?(): Promise<string>;
 	onSelect(prompt: OAuthSelectPrompt): Promise<string | undefined>;
+	/** Optional app-owned renderer for browser callback pages. */
+	renderCallbackPage?: OAuthCallbackPageRenderer;
 	signal?: AbortSignal;
 }
 

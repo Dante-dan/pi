@@ -255,6 +255,7 @@ function adaptOAuth(config: ExtensionOAuthConfig): OAuthAuth {
 				onProgress: (message) => callbacks.notify({ type: "progress", message }),
 				onManualCodeInput: () => callbacks.prompt({ type: "manual_code", message: "Paste the authorization code" }),
 				onSelect: (prompt) => callbacks.prompt({ type: "select", ...prompt }),
+				renderCallbackPage: callbacks.renderCallbackPage,
 				signal: callbacks.signal,
 			});
 			return { ...credential, type: "oauth" };

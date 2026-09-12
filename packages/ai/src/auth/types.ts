@@ -146,6 +146,17 @@ export type AuthEvent =
 	  }
 	| { type: "progress"; message: string };
 
+/** Content passed to an app-owned OAuth browser callback page renderer. */
+export interface OAuthCallbackPageOptions {
+	readonly title: string;
+	readonly heading: string;
+	readonly message: string;
+	readonly details?: string;
+}
+
+/** Render the complete HTML response for a browser-based OAuth callback. Falls back to the built-in page if it throws. */
+export type OAuthCallbackPageRenderer = (options: OAuthCallbackPageOptions) => string;
+
 /**
  * Login interaction callbacks serving both api-key and OAuth flows.
  *
@@ -158,6 +169,8 @@ export interface AuthInteraction {
 
 	prompt(prompt: AuthPrompt): Promise<string>;
 	notify(event: AuthEvent): void;
+	/** Optional app-owned renderer. Omit to retain pi's built-in callback page. */
+	renderCallbackPage?: OAuthCallbackPageRenderer;
 }
 
 /** Normalized interaction passed to provider login implementations. */

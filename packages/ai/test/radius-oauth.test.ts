@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRadiusOAuth } from "../src/auth/oauth/radius.ts";
-import type { AuthEvent, ProviderAuthInteraction } from "../src/auth/types.ts";
+import type { AuthEvent, OAuthCallbackPageOptions, ProviderAuthInteraction } from "../src/auth/types.ts";
 
 const GATEWAY = "https://radius.example";
+const nativeFetch = globalThis.fetch;
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -125,5 +126,56 @@ describe("Radius OAuth", () => {
 		const oauth = createRadiusOAuth({ name: "Radius", gateway: GATEWAY });
 		await expect(oauth.login(interaction("browser"))).rejects.toThrow(`Invalid Radius OAuth config from ${GATEWAY}`);
 		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+
+	it("uses an opt-in callback page renderer for browser login", async () => {
+		// Regression test for https://github.com/earendil-works/pi/issues/5372
+		const renderedPages: OAuthCallbackPageOptions[] = [];
+		let callbackResponse: Promise<Response> | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown, init?: RequestInit): Promise<Response> => {
+				const url = requestUrl(input);
+				if (url === `${GATEWAY}/v1/oauth`) {
+					return jsonResponse({ authorizationEndpoint: "https://radius-ui.example/authorize" });
+				}
+				if (url === `${GATEWAY}/v1/oauth/token`) {
+					return jsonResponse({ access_token: "access-token", refresh_token: "refresh-token", expires_in: 3600 });
+				}
+				return nativeFetch(input as string | URL | Request, init);
+			}),
+		);
+
+		const oauth = createRadiusOAuth({ name: "Radius", gateway: GATEWAY });
+		const credentials = await oauth.login({
+			signal: new AbortController().signal,
+			renderCallbackPage: (options) => {
+				renderedPages.push(options);
+				return `<h1>${options.heading}</h1><p>${options.message}</p>`;
+			},
+			prompt: async () => "browser",
+			notify: (event) => {
+				if (event.type !== "auth_url") return;
+				const authUrl = new URL(event.url);
+				const callbackUrl = new URL(authUrl.searchParams.get("redirect_uri") ?? "");
+				callbackUrl.searchParams.set("code", "browser-code");
+				callbackUrl.searchParams.set("state", authUrl.searchParams.get("state") ?? "");
+				callbackResponse = nativeFetch(callbackUrl);
+			},
+		});
+
+		expect(credentials).toMatchObject({ access: "access-token", refresh: "refresh-token" });
+		const response = await callbackResponse;
+		expect(response?.status).toBe(200);
+		expect(await response?.text()).toBe(
+			"<h1>Authentication successful</h1><p>Signed in to Radius. You may now close this page.</p>",
+		);
+		expect(renderedPages).toEqual([
+			{
+				title: "Authentication successful",
+				heading: "Authentication successful",
+				message: "Signed in to Radius. You may now close this page.",
+			},
+		]);
 	});
 });

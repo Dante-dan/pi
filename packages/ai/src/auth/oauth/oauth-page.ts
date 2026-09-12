@@ -1,3 +1,5 @@
+import type { OAuthCallbackPageOptions, OAuthCallbackPageRenderer } from "../types.ts";
+
 const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" aria-hidden="true"><path fill="#fff" fill-rule="evenodd" d="M165.29 165.29 H517.36 V400 H400 V517.36 H282.65 V634.72 H165.29 Z M282.65 282.65 V400 H400 V282.65 Z"/><path fill="#fff" d="M517.36 400 H634.72 V634.72 H517.36 Z"/></svg>`;
 
 function escapeHtml(value: string): string {
@@ -9,7 +11,7 @@ function escapeHtml(value: string): string {
 		.replaceAll("'", "&#39;");
 }
 
-function renderPage(options: { title: string; heading: string; message: string; details?: string }): string {
+function defaultRenderCallbackPage(options: OAuthCallbackPageOptions): string {
 	const title = escapeHtml(options.title);
 	const heading = escapeHtml(options.heading);
 	const message = escapeHtml(options.message);
@@ -91,19 +93,35 @@ function renderPage(options: { title: string; heading: string; message: string; 
 </html>`;
 }
 
-export function oauthSuccessHtml(message: string): string {
-	return renderPage({
-		title: "Authentication successful",
-		heading: "Authentication successful",
-		message,
-	});
+function renderCallbackPage(options: OAuthCallbackPageOptions, renderer?: OAuthCallbackPageRenderer): string {
+	if (!renderer) return defaultRenderCallbackPage(options);
+
+	try {
+		return renderer(options);
+	} catch {
+		return defaultRenderCallbackPage(options);
+	}
 }
 
-export function oauthErrorHtml(message: string, details?: string): string {
-	return renderPage({
-		title: "Authentication failed",
-		heading: "Authentication failed",
-		message,
-		details,
-	});
+export function oauthSuccessHtml(message: string, renderer?: OAuthCallbackPageRenderer): string {
+	return renderCallbackPage(
+		{
+			title: "Authentication successful",
+			heading: "Authentication successful",
+			message,
+		},
+		renderer,
+	);
+}
+
+export function oauthErrorHtml(message: string, details?: string, renderer?: OAuthCallbackPageRenderer): string {
+	return renderCallbackPage(
+		{
+			title: "Authentication failed",
+			heading: "Authentication failed",
+			message,
+			details,
+		},
+		renderer,
+	);
 }

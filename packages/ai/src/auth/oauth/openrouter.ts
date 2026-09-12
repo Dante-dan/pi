@@ -13,7 +13,7 @@
 
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
-import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
+import type { OAuthAuth, OAuthCallbackPageRenderer, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.ts";
 import { generatePKCE } from "./pkce.ts";
 
@@ -136,6 +136,7 @@ async function startCallbackServer(
 	callbackPath: string,
 	verifier: string,
 	signal: AbortSignal,
+	renderCallbackPage?: OAuthCallbackPageRenderer,
 ): Promise<OpenRouterCallbackServer> {
 	if (signal.aborted) throw new Error("Login cancelled");
 	const callbackHost = getCallbackHost();
@@ -170,36 +171,52 @@ async function startCallbackServer(
 		void (async () => {
 			const requestUrl = new URL(request.url ?? "/", `http://${callbackHost}`);
 			if (request.method !== "GET" || requestUrl.pathname !== callbackPath) {
-				sendHtml(response, 404, oauthErrorHtml("OAuth callback route not found."));
+				sendHtml(response, 404, oauthErrorHtml("OAuth callback route not found.", undefined, renderCallbackPage));
 				return;
 			}
 			if (claimed || settled) {
-				sendHtml(response, 409, oauthErrorHtml("This OAuth callback has already been used."));
+				sendHtml(
+					response,
+					409,
+					oauthErrorHtml("This OAuth callback has already been used.", undefined, renderCallbackPage),
+				);
 				return;
 			}
 
 			const oauthError = requestUrl.searchParams.get("error");
 			if (oauthError) {
 				const description = requestUrl.searchParams.get("error_description") ?? oauthError;
-				sendHtml(response, 400, oauthErrorHtml("OpenRouter authorization was denied.", description));
+				sendHtml(
+					response,
+					400,
+					oauthErrorHtml("OpenRouter authorization was denied.", description, renderCallbackPage),
+				);
 				finish({ error: new Error(`OpenRouter authorization failed: ${description}`) });
 				return;
 			}
 
 			const code = requestUrl.searchParams.get("code");
 			if (!code) {
-				sendHtml(response, 400, oauthErrorHtml("OpenRouter returned no authorization code."));
+				sendHtml(
+					response,
+					400,
+					oauthErrorHtml("OpenRouter returned no authorization code.", undefined, renderCallbackPage),
+				);
 				return;
 			}
 			claimed = true;
 
 			try {
 				const result = await exchangeAuthorizationCode(code, verifier, signal);
-				sendHtml(response, 200, oauthSuccessHtml("Signed in to OpenRouter. You may now close this page."));
+				sendHtml(
+					response,
+					200,
+					oauthSuccessHtml("Signed in to OpenRouter. You may now close this page.", renderCallbackPage),
+				);
 				finish({ credential: result });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : "Unknown token exchange error";
-				sendHtml(response, 502, oauthErrorHtml("OpenRouter key exchange failed.", message));
+				sendHtml(response, 502, oauthErrorHtml("OpenRouter key exchange failed.", message, renderCallbackPage));
 				finish({ error: error instanceof Error ? error : new Error(message) });
 			}
 		})();
@@ -242,7 +259,12 @@ async function startCallbackServer(
 async function loginOpenRouter(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
 	const { verifier, challenge } = await generatePKCE();
 	const callbackPath = `/oauth/callback/${crypto.randomUUID()}`;
-	const callback = await startCallbackServer(callbackPath, verifier, interaction.signal);
+	const callback = await startCallbackServer(
+		callbackPath,
+		verifier,
+		interaction.signal,
+		interaction.renderCallbackPage,
+	);
 	const manualAbort = new AbortController();
 	let manualInput: string | undefined;
 	let manualError: Error | undefined;

@@ -18,7 +18,7 @@ if (typeof process !== "undefined" && (process.versions?.node || process.version
 }
 
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
-import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
+import type { OAuthAuth, OAuthCallbackPageRenderer, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
 import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.ts";
 import { generatePKCE } from "./pkce.ts";
@@ -317,7 +317,10 @@ type OAuthServerInfo = {
 	waitForCode: () => Promise<{ code: string } | null>;
 };
 
-function startLocalOAuthServer(state: string): Promise<OAuthServerInfo> {
+function startLocalOAuthServer(
+	state: string,
+	renderCallbackPage?: OAuthCallbackPageRenderer,
+): Promise<OAuthServerInfo> {
 	if (!_http) {
 		throw new Error("OpenAI Codex OAuth is only available in Node.js environments");
 	}
@@ -338,30 +341,30 @@ function startLocalOAuthServer(state: string): Promise<OAuthServerInfo> {
 			if (url.pathname !== "/auth/callback") {
 				res.statusCode = 404;
 				res.setHeader("Content-Type", "text/html; charset=utf-8");
-				res.end(oauthErrorHtml("Callback route not found."));
+				res.end(oauthErrorHtml("Callback route not found.", undefined, renderCallbackPage));
 				return;
 			}
 			if (url.searchParams.get("state") !== state) {
 				res.statusCode = 400;
 				res.setHeader("Content-Type", "text/html; charset=utf-8");
-				res.end(oauthErrorHtml("State mismatch."));
+				res.end(oauthErrorHtml("State mismatch.", undefined, renderCallbackPage));
 				return;
 			}
 			const code = url.searchParams.get("code");
 			if (!code) {
 				res.statusCode = 400;
 				res.setHeader("Content-Type", "text/html; charset=utf-8");
-				res.end(oauthErrorHtml("Missing authorization code."));
+				res.end(oauthErrorHtml("Missing authorization code.", undefined, renderCallbackPage));
 				return;
 			}
 			res.statusCode = 200;
 			res.setHeader("Content-Type", "text/html; charset=utf-8");
-			res.end(oauthSuccessHtml("OpenAI authentication completed. You can close this window."));
+			res.end(oauthSuccessHtml("OpenAI authentication completed. You can close this window.", renderCallbackPage));
 			settleWait?.({ code });
 		} catch {
 			res.statusCode = 500;
 			res.setHeader("Content-Type", "text/html; charset=utf-8");
-			res.end(oauthErrorHtml("Internal error while processing OAuth callback."));
+			res.end(oauthErrorHtml("Internal error while processing OAuth callback.", undefined, renderCallbackPage));
 		}
 	});
 
@@ -444,7 +447,7 @@ async function loginOpenAICodexDeviceCode(interaction: ProviderAuthInteraction):
 
 async function loginOpenAICodex(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
 	const { verifier, state, url } = await createAuthorizationFlow();
-	const server = await startLocalOAuthServer(state);
+	const server = await startLocalOAuthServer(state, interaction.renderCallbackPage);
 	const manualAbort = new AbortController();
 	const onAbort = () => server.cancelWait();
 	interaction.signal.addEventListener("abort", onAbort, { once: true });

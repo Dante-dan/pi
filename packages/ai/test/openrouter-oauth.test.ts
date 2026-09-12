@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
 import { openRouterOAuth } from "../src/auth/oauth/openrouter.ts";
+import type { OAuthCallbackPageOptions } from "../src/auth/types.ts";
 import { createImagesModels } from "../src/images-models.ts";
 import { createModels } from "../src/models.ts";
 import { openrouterProvider } from "../src/providers/openrouter.ts";
@@ -53,7 +54,9 @@ describe.sequential("OpenRouter OAuth", () => {
 	});
 
 	it("runs PKCE on a one-shot loopback callback and exchanges the code for a permanent API key", async () => {
+		// Regression test for https://github.com/earendil-works/pi/issues/5372
 		let exchangeBody: Record<string, unknown> | undefined;
+		const renderedPages: OAuthCallbackPageOptions[] = [];
 		const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 			const url = input instanceof Request ? input.url : String(input);
 			if (url !== TOKEN_URL) return nativeFetch(input, init);
@@ -67,6 +70,10 @@ describe.sequential("OpenRouter OAuth", () => {
 		let manualSignal: AbortSignal | undefined;
 		const credential = await openRouterOAuth.login({
 			signal: neverAbortedSignal,
+			renderCallbackPage: (options) => {
+				renderedPages.push(options);
+				return `<h1>${options.heading}</h1><p>${options.message}</p>`;
+			},
 			prompt: (prompt) => {
 				manualSignal = prompt.signal;
 				return new Promise<string>(() => {});
@@ -86,7 +93,18 @@ describe.sequential("OpenRouter OAuth", () => {
 			refresh: "",
 			expires: Number.MAX_SAFE_INTEGER,
 		});
-		expect((await callbackResponse)?.status).toBe(200);
+		const response = await callbackResponse;
+		expect(response?.status).toBe(200);
+		expect(await response?.text()).toBe(
+			"<h1>Authentication successful</h1><p>Signed in to OpenRouter. You may now close this page.</p>",
+		);
+		expect(renderedPages).toEqual([
+			{
+				title: "Authentication successful",
+				heading: "Authentication successful",
+				message: "Signed in to OpenRouter. You may now close this page.",
+			},
+		]);
 		expect(manualSignal?.aborted).toBe(true);
 		expect(authorizeUrl?.origin).toBe("https://openrouter.ai");
 		expect(authorizeUrl?.pathname).toBe("/auth");
