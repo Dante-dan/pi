@@ -247,6 +247,30 @@ describe("TUI render scheduling", () => {
 		tui.stop();
 	});
 
+	it("lets resize preempt an above-viewport redraw delay", async () => {
+		// Regression test for #9255.
+		const terminal = new LoggingVirtualTerminal(40, 5);
+		const tui: TUI = new TuiMainScreen(terminal);
+		const component = new TestComponent();
+		component.lines = Array.from({ length: 30 }, (_, index) => `Line ${index}`);
+		tui.addChild(component);
+		tui.start();
+		await terminal.waitForRender();
+
+		component.lines[0] = "background";
+		tui.requestRender();
+		await terminal.waitForRender();
+		const redrawsBeforeResize = tui.fullRedraws;
+		component.lines[0] = "resized";
+		tui.requestRender();
+		terminal.resize(50, 5);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+
+		assert.strictEqual(tui.fullRedraws, redrawsBeforeResize + 1);
+		assert.ok(terminal.getWrites().includes("resized"));
+		tui.stop();
+	});
+
 	it("renders keyboard input without waiting for a throttled frame", async () => {
 		const terminal = new VirtualTerminal(40, 10);
 		const tui: TUI = new TuiMainScreen(terminal);
