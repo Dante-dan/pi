@@ -7,6 +7,7 @@ import { visibleWidth } from "./utils.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 const MAX_RENDER_WRITE_CHARS = 1024 * 1024;
+const ABOVE_VIEWPORT_REDRAW_INTERVAL_MS = 100;
 
 /**
  * Streams terminal output in 1 MiB chunks so a full render never forms one string large enough to exceed V8's limit.
@@ -451,6 +452,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		if (firstChanged < prevViewportTop) {
 			logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
 			fullRender(true);
+			this.coalesceRendersFor(ABOVE_VIEWPORT_REDRAW_INTERVAL_MS);
 			return;
 		}
 

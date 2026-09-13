@@ -474,6 +474,7 @@ export abstract class TuiBase extends Container implements TUI {
 	private immediateRenderScheduled = false;
 	private renderTimer: NodeJS.Timeout | undefined;
 	private lastRenderAt = 0;
+	private renderNotBefore = 0;
 	private static readonly MIN_RENDER_INTERVAL_MS = 16;
 	private showHardwareCursor = false;
 	private clearOnShrink = false;
@@ -880,7 +881,7 @@ export abstract class TuiBase extends Container implements TUI {
 		this.beforeTerminalStart();
 		this.terminal.start(
 			(data) => this.handleTerminalInput(data),
-			() => this.requestRender(),
+			() => this.requestImmediateRender(),
 		);
 		this.afterTerminalStart();
 		this.terminal.hideCursor();
@@ -930,6 +931,9 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	stop(options: TuiStopOptions = {}): void {
+		if (!this.stopped && this.renderRequested) {
+			this.renderNow();
+		}
 		this.stopped = true;
 		this.cancelRenderTimer();
 		if (this.terminalColorSchemeNotificationsEnabled) {
@@ -943,6 +947,7 @@ export abstract class TuiBase extends Container implements TUI {
 
 	renderNow(force = false): void {
 		if (force) this.resetRenderState();
+		this.renderNotBefore = 0;
 		this.renderRequested = false;
 		this.cancelRenderTimer();
 		this.lastRenderAt = performance.now();
@@ -961,6 +966,7 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	private requestImmediateRender(): void {
+		this.renderNotBefore = 0;
 		this.cancelRenderTimer();
 		this.renderRequested = true;
 		if (this.immediateRenderScheduled) return;
@@ -988,7 +994,7 @@ export abstract class TuiBase extends Container implements TUI {
 			return;
 		}
 		const elapsed = performance.now() - this.lastRenderAt;
-		const delay = Math.max(0, TuiBase.MIN_RENDER_INTERVAL_MS - elapsed);
+		const delay = Math.max(0, TuiBase.MIN_RENDER_INTERVAL_MS - elapsed, this.renderNotBefore - performance.now());
 		this.renderTimer = setTimeout(() => {
 			this.renderTimer = undefined;
 			if (this.stopped || !this.renderRequested) {
@@ -1001,6 +1007,11 @@ export abstract class TuiBase extends Container implements TUI {
 				this.scheduleRender();
 			}
 		}, delay);
+	}
+
+	/** Keep ordinary background renders to one trailing frame within a fixed window. */
+	protected coalesceRendersFor(delayMs: number): void {
+		this.renderNotBefore = performance.now() + delayMs;
 	}
 
 	private handleTerminalInput(data: string): void {

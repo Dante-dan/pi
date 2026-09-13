@@ -114,6 +114,117 @@ function getCellItalic(terminal: VirtualTerminal, row: number, col: number): num
 }
 
 describe("TUI render scheduling", () => {
+	it("coalesces repeated above-viewport redraws and flushes the latest transcript", async () => {
+		// Regression test for #9255.
+		const terminal = new LoggingVirtualTerminal(40, 5);
+		const tui: TUI = new TuiMainScreen(terminal);
+		const component = new TestComponent();
+		component.lines = Array.from({ length: 30 }, (_, index) => `Line ${index}`);
+		tui.addChild(component);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+		const redrawsBefore = tui.fullRedraws;
+
+		component.lines[0] = "Frame 1";
+		tui.requestRender();
+		await terminal.waitForRender();
+		const singleRedrawChars = terminal.getWrites().length;
+		terminal.clearWrites();
+
+		for (let frame = 2; frame <= 5; frame++) {
+			component.lines[0] = `Frame ${frame}`;
+			tui.requestRender();
+			await new Promise((resolve) => setTimeout(resolve, 15));
+		}
+		await new Promise((resolve) => setTimeout(resolve, 80));
+
+		assert.strictEqual(tui.fullRedraws - redrawsBefore, 2, "first and trailing frames should redraw");
+		assert.strictEqual(
+			terminal.getWrites().split("\x1b[2J").length - 1,
+			1,
+			"intermediate background frames should not clear the terminal",
+		);
+		assert.ok(
+			terminal.getWrites().length <= singleRedrawChars,
+			"four updates in the window should write at most one full transcript",
+		);
+		assert.ok(terminal.getWrites().includes("Frame 5"), "the trailing redraw should use the latest transcript");
+		tui.stop();
+	});
+
+	it("lets keyboard input preempt an above-viewport redraw delay", async () => {
+		// Regression test for #9255.
+		const terminal = new LoggingVirtualTerminal(40, 5);
+		const tui: TUI = new TuiMainScreen(terminal);
+		const component = new InputComponent();
+		component.lines = Array.from({ length: 30 }, (_, index) => `Line ${index}`);
+		tui.addChild(component);
+		tui.setFocus(component);
+		tui.start();
+		await terminal.waitForRender();
+
+		component.lines[0] = "background";
+		tui.requestRender();
+		await terminal.waitForRender();
+		const redrawsBeforeInput = tui.fullRedraws;
+		component.lines[0] = "pending";
+		tui.requestRender();
+		terminal.sendInput("typed");
+		await new Promise<void>((resolve) => process.nextTick(resolve));
+
+		assert.strictEqual(tui.fullRedraws, redrawsBeforeInput + 1);
+		assert.ok(terminal.getWrites().includes("typed"));
+		tui.stop();
+	});
+
+	it("cancels a queued background frame when a forced render preempts it", async () => {
+		// Regression test for #9255.
+		const terminal = new LoggingVirtualTerminal(40, 5);
+		const tui: TUI = new TuiMainScreen(terminal);
+		const component = new TestComponent();
+		component.lines = Array.from({ length: 30 }, (_, index) => `Line ${index}`);
+		tui.addChild(component);
+		tui.start();
+		await terminal.waitForRender();
+
+		component.lines[0] = "background";
+		tui.requestRender();
+		await terminal.waitForRender();
+		const redrawsBeforeForce = tui.fullRedraws;
+		component.lines[0] = "queued";
+		tui.requestRender();
+		component.lines[0] = "forced";
+		tui.requestRender(true);
+		await new Promise<void>((resolve) => process.nextTick(resolve));
+		assert.strictEqual(tui.fullRedraws, redrawsBeforeForce + 1);
+		assert.ok(terminal.getWrites().includes("forced"));
+
+		await new Promise((resolve) => setTimeout(resolve, 120));
+		assert.strictEqual(tui.fullRedraws, redrawsBeforeForce + 1, "the cancelled timer must not draw an old frame");
+		tui.stop();
+	});
+
+	it("flushes a queued above-viewport update before stopping", async () => {
+		// Regression test for #9255.
+		const terminal = new LoggingVirtualTerminal(40, 5);
+		const tui: TUI = new TuiMainScreen(terminal);
+		const component = new TestComponent();
+		component.lines = Array.from({ length: 30 }, (_, index) => `Line ${index}`);
+		tui.addChild(component);
+		tui.start();
+		await terminal.waitForRender();
+
+		component.lines[0] = "background";
+		tui.requestRender();
+		await terminal.waitForRender();
+		component.lines[0] = "final transcript";
+		tui.requestRender();
+		tui.stop();
+
+		assert.ok(terminal.getWrites().includes("final transcript"));
+	});
+
 	it("renders keyboard input without waiting for a throttled frame", async () => {
 		const terminal = new VirtualTerminal(40, 10);
 		const tui: TUI = new TuiMainScreen(terminal);
