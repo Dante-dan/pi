@@ -48,6 +48,7 @@ const DEFAULT_MAX_RETRIES = 0;
 const BASE_DELAY_MS = 1000;
 const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
 const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
+const DEFAULT_CODEX_TOTAL_TIMEOUT_MS = 30 * 60 * 1000;
 // The Codex backend accepts zstd-compressed request bodies on the SSE responses
 // endpoint (the same endpoint the official Codex client compresses against).
 const REQUEST_COMPRESSION_ZSTD_LEVEL = 3;
@@ -182,12 +183,39 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 	});
 }
 
-function normalizeTimeoutMs(value: number | undefined): number | undefined {
+function normalizeTimeoutMs(value: number | undefined, optionName = "timeoutMs"): number | undefined {
 	if (value === undefined) return undefined;
 	if (!Number.isFinite(value) || value < 0) {
-		throw new Error(`Invalid timeoutMs: ${String(value)}`);
+		throw new Error(`Invalid ${optionName}: ${String(value)}`);
 	}
 	return Math.floor(value);
+}
+
+function createTotalTimeoutSignal(timeoutMs: number | undefined): {
+	signal?: AbortSignal;
+	cleanup: () => void;
+} {
+	if (timeoutMs === undefined || timeoutMs === 0) {
+		return { cleanup: () => {} };
+	}
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), timeoutMs);
+	return {
+		signal: controller.signal,
+		cleanup: () => clearTimeout(timeout),
+	};
+}
+
+function translateTotalTimeoutError(
+	error: unknown,
+	totalTimeoutSignal: AbortSignal | undefined,
+	userSignal: AbortSignal | undefined,
+	totalTimeoutMs: number | undefined,
+): unknown {
+	if (totalTimeoutSignal?.aborted && !userSignal?.aborted) {
+		return new Error(`Codex transport total timeout after ${totalTimeoutMs}ms`);
+	}
+	return error;
 }
 
 // ============================================================================
@@ -282,7 +310,14 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			);
 			const bodyJson = JSON.stringify(body);
 			const httpTimeoutMs = normalizeTimeoutMs(options?.timeoutMs);
-			const websocketConnectTimeoutMs = normalizeTimeoutMs(options?.websocketConnectTimeoutMs);
+			const totalTimeoutMs = normalizeTimeoutMs(
+				options?.totalTimeoutMs ?? DEFAULT_CODEX_TOTAL_TIMEOUT_MS,
+				"totalTimeoutMs",
+			);
+			const websocketConnectTimeoutMs = normalizeTimeoutMs(
+				options?.websocketConnectTimeoutMs,
+				"websocketConnectTimeoutMs",
+			);
 			const transport = options?.transport || "auto";
 			let startEmitted = false;
 			const websocketDisabledForSession = transport !== "sse" && isWebSocketSseFallbackActive(cacheSessionId);
@@ -296,6 +331,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				let retriedMissingWebSocketContinuation = false;
 				while (true) {
 					websocketStarted = false;
+					const totalTimeout = createTotalTimeoutSignal(totalTimeoutMs);
+					const attemptSignal = combineAbortSignals([options?.signal, totalTimeout.signal]);
 					try {
 						await processWebSocketStream(
 							resolveCodexWebSocketUrl(model.baseUrl),
@@ -316,7 +353,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							cacheSessionId,
 							accountId,
 							grammarToolInputProperties,
-							options,
+							{ ...options, signal: attemptSignal.signal },
 						);
 
 						if (options?.signal?.aborted) {
@@ -330,7 +367,13 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						});
 						stream.end();
 						return;
-					} catch (error) {
+					} catch (caughtError) {
+						const error = translateTotalTimeoutError(
+							caughtError,
+							totalTimeout.signal,
+							options?.signal,
+							totalTimeoutMs,
+						);
 						const aborted = options?.signal?.aborted;
 						const connectionLimitBeforeStart = !websocketStarted && isWebSocketConnectionLimitReachedError(error);
 						const previousResponseNotFound = isPreviousResponseNotFoundError(error);
@@ -361,6 +404,9 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						}
 						recordWebSocketSseFallback(cacheSessionId);
 						break;
+					} finally {
+						attemptSignal.cleanup();
+						totalTimeout.cleanup();
 					}
 				}
 			}
@@ -377,6 +423,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			// Fetch with retry logic for rate limits and transient errors
 			let response: Response | undefined;
 			let lastError: Error | undefined;
+			let responseTotalTimeout: { signal?: AbortSignal; cleanup: () => void } | undefined;
 			const maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
 
 			for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -384,10 +431,12 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 					throw new Error("Request was aborted");
 				}
 
+				const totalTimeout = createTotalTimeoutSignal(totalTimeoutMs);
+				let keepTotalTimeout = false;
 				try {
 					const headerTimeoutSignal =
 						httpTimeoutMs !== undefined && httpTimeoutMs > 0 ? AbortSignal.timeout(httpTimeoutMs) : undefined;
-					const combinedSignal = combineAbortSignals([options?.signal, headerTimeoutSignal]);
+					const combinedSignal = combineAbortSignals([options?.signal, headerTimeoutSignal, totalTimeout.signal]);
 					try {
 						response = await (options?.fetch ?? globalThis.fetch)(resolveCodexUrl(model.baseUrl), {
 							method: "POST",
@@ -399,7 +448,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						if (headerTimeoutSignal?.aborted && !options?.signal?.aborted) {
 							throw new Error(`Codex SSE response headers timed out after ${httpTimeoutMs}ms`);
 						}
-						throw error;
+						throw translateTotalTimeoutError(error, totalTimeout.signal, options?.signal, totalTimeoutMs);
 					} finally {
 						combinedSignal.cleanup();
 					}
@@ -409,6 +458,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 					);
 
 					if (response.ok) {
+						responseTotalTimeout = totalTimeout;
+						keepTotalTimeout = true;
 						break;
 					}
 
@@ -449,6 +500,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						continue;
 					}
 					throw lastError;
+				} finally {
+					if (!keepTotalTimeout) totalTimeout.cleanup();
 				}
 			}
 
@@ -457,6 +510,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			}
 
 			if (!response.body) {
+				responseTotalTimeout?.cleanup();
 				throw new Error("No response body");
 			}
 
@@ -464,7 +518,18 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				startEmitted = true;
 				stream.push({ type: "start", partial: output });
 			}
-			await processStream(response, output, stream, model, grammarToolInputProperties, options);
+			const bodySignal = combineAbortSignals([options?.signal, responseTotalTimeout?.signal]);
+			try {
+				await processStream(response, output, stream, model, grammarToolInputProperties, {
+					...options,
+					signal: bodySignal.signal,
+				});
+			} catch (error) {
+				throw translateTotalTimeoutError(error, responseTotalTimeout?.signal, options?.signal, totalTimeoutMs);
+			} finally {
+				bodySignal.cleanup();
+				responseTotalTimeout?.cleanup();
+			}
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");

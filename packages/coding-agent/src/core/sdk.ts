@@ -324,6 +324,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			return modelRuntime.streamSimple(model, context, {
 				...options,
 				timeoutMs,
+				totalTimeoutMs: options?.totalTimeoutMs ?? providerRetrySettings.totalTimeoutMs,
 				websocketConnectTimeoutMs,
 				maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
 				maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,

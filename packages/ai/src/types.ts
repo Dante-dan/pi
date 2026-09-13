@@ -162,6 +162,12 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
 	 */
 	timeoutMs?: number;
 	/**
+	 * Non-resetting wall-clock timeout for one provider transport attempt.
+	 * Unlike timeoutMs, receiving stream data does not extend this deadline.
+	 * Providers that do not support this option ignore it. Set to 0 to disable.
+	 */
+	totalTimeoutMs?: number;
+	/**
 	 * Maximum retry attempts for providers/SDKs that support client-side retries.
 	 * For example, OpenAI and Anthropic SDK clients default to 2.
 	 */

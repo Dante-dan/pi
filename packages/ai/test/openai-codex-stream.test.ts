@@ -12,6 +12,7 @@ import {
 	streamSimple as streamSimpleOpenAICodexResponses,
 } from "../src/api/openai-codex-responses.ts";
 import type { Context, Model } from "../src/types.ts";
+import { isRetryableAssistantError } from "../src/utils/retry.ts";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 
@@ -417,6 +418,77 @@ describe("openai-codex streaming", () => {
 		expect(result.errorMessage).toBe("Codex SSE response headers timed out after 10ms");
 	});
 
+	// Regression test for https://github.com/earendil-works/pi/issues/9474
+	it("ends an active SSE stream at the non-resetting total timeout", async () => {
+		vi.useFakeTimers();
+		const token = mockToken();
+		const encoder = new TextEncoder();
+		let cancelled = false;
+		let heartbeat: ReturnType<typeof setInterval> | undefined;
+		const responseBody = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(
+					encoder.encode(
+						`${[
+							`data: ${JSON.stringify({
+								type: "response.output_item.added",
+								item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] },
+							})}`,
+							`data: ${JSON.stringify({ type: "response.content_part.added", part: { type: "output_text", text: "" } })}`,
+						].join("\n\n")}\n\n`,
+					),
+				);
+				heartbeat = setInterval(() => {
+					controller.enqueue(
+						encoder.encode(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "." })}\n\n`),
+					);
+				}, 5);
+			},
+			cancel() {
+				cancelled = true;
+				if (heartbeat) clearInterval(heartbeat);
+			},
+		});
+
+		const resultPromise = streamOpenAICodexResponses(
+			{
+				id: "gpt-5.1-codex",
+				name: "GPT-5.1 Codex",
+				api: "openai-codex-responses",
+				provider: "openai-codex",
+				baseUrl: "https://chatgpt.com/backend-api",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 400000,
+				maxTokens: 128000,
+			},
+			{ systemPrompt: "", messages: [] },
+			{
+				apiKey: token,
+				transport: "sse",
+				timeoutMs: 10,
+				totalTimeoutMs: 30,
+				fetch: async () =>
+					new Response(responseBody, { status: 200, headers: { "content-type": "text/event-stream" } }),
+			},
+		).result();
+
+		let settled = false;
+		void resultPromise.then(() => {
+			settled = true;
+		});
+		await vi.advanceTimersByTimeAsync(29);
+		expect(settled).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
+
+		const result = await resultPromise;
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("Codex transport total timeout after 30ms");
+		expect(isRetryableAssistantError(result)).toBe(true);
+		expect(cancelled).toBe(true);
+	});
+
 	it("aborts SSE body reads after response headers arrive", async () => {
 		const token = mockToken();
 		const encoder = new TextEncoder();
@@ -509,6 +581,7 @@ describe("openai-codex streaming", () => {
 			apiKey: token,
 			transport: "sse",
 			signal: controller.signal,
+			totalTimeoutMs: 100,
 		});
 		for await (const event of resultStream) {
 			events.push(event.type === "text_delta" ? `text_delta:${event.delta}` : event.type);
@@ -1890,6 +1963,69 @@ describe("openai-codex streaming", () => {
 		const result = await resultPromise;
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toBe("WebSocket idle timeout after 50ms");
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	// Regression test for https://github.com/earendil-works/pi/issues/9474
+	it("ends an active websocket at the non-resetting total timeout", async () => {
+		vi.useFakeTimers();
+		const token = mockToken();
+		const fetchMock = vi.fn();
+		let heartbeat: ReturnType<typeof setInterval> | undefined;
+		let closed = false;
+		vi.stubGlobal("fetch", fetchMock);
+
+		class MockWebSocket extends EventTarget {
+			static OPEN = 1;
+			readyState = MockWebSocket.OPEN;
+
+			constructor() {
+				super();
+				queueMicrotask(() => this.dispatchEvent(new Event("open")));
+			}
+
+			send(): void {
+				const emitDelta = () => {
+					this.dispatchEvent(
+						Object.assign(new Event("message"), {
+							data: JSON.stringify({ type: "response.output_text.delta", delta: "." }),
+						}),
+					);
+				};
+				emitDelta();
+				heartbeat = setInterval(emitDelta, 5);
+			}
+
+			close(): void {
+				closed = true;
+				this.readyState = 3;
+				if (heartbeat) clearInterval(heartbeat);
+			}
+		}
+
+		vi.stubGlobal("WebSocket", MockWebSocket);
+		const resultPromise = streamOpenAICodexResponses(
+			{
+				id: "gpt-5.1-codex",
+				name: "GPT-5.1 Codex",
+				api: "openai-codex-responses",
+				provider: "openai-codex",
+				baseUrl: "https://chatgpt.com/backend-api",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 400000,
+				maxTokens: 128000,
+			},
+			{ systemPrompt: "", messages: [] },
+			{ apiKey: token, transport: "websocket", timeoutMs: 10, totalTimeoutMs: 30 },
+		).result();
+
+		await vi.advanceTimersByTimeAsync(30);
+		const result = await resultPromise;
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("Codex transport total timeout after 30ms");
+		expect(closed).toBe(true);
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 

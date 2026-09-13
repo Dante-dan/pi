@@ -9,6 +9,7 @@ describe("regression #7572: nested provider retry settings merge", () => {
 				retry: {
 					provider: {
 						timeoutMs: 30000,
+						totalTimeoutMs: 90000,
 						maxRetryDelayMs: 45000,
 					},
 				},
@@ -28,6 +29,7 @@ describe("regression #7572: nested provider retry settings merge", () => {
 
 		expect(settingsManager.getProviderRetrySettings()).toEqual({
 			timeoutMs: 30000,
+			totalTimeoutMs: 90000,
 			maxRetries: 2,
 			maxRetryDelayMs: 45000,
 		});

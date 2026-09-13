@@ -145,6 +145,20 @@ describe("createAgentSession stream options", () => {
 		expect(options?.timeoutMs).toBe(0);
 	});
 
+	it("forwards and overrides the provider total timeout", async () => {
+		const fromSettings = await captureStreamOptions("openai-codex-responses", {
+			retry: { provider: { totalTimeoutMs: 90000 } },
+		});
+		const fromRequest = await captureStreamOptions(
+			"openai-codex-responses",
+			{ retry: { provider: { totalTimeoutMs: 90000 } } },
+			{ totalTimeoutMs: 0 },
+		);
+
+		expect(fromSettings?.totalTimeoutMs).toBe(90000);
+		expect(fromRequest?.totalTimeoutMs).toBe(0);
+	});
+
 	it("forwards websocketConnectTimeoutMs from settings", async () => {
 		const options = await captureStreamOptions("openai-codex-responses", { websocketConnectTimeoutMs: 1234 });
 

@@ -177,6 +177,7 @@ See [compaction.md](compaction.md) for trigger and summarization behavior.
 | `retry.baseDelayMs` | number | `2000` | Base delay for agent-level exponential backoff (2s, 4s, 8s) |
 | `retry.maxAgentDelayMs` | number | `60000` | Max agent-level retry delay (60s) |
 | `retry.provider.timeoutMs` | number | SDK default | Provider/SDK request timeout in milliseconds |
+| `retry.provider.totalTimeoutMs` | number | Provider default (Codex: `1800000`) | Non-resetting wall-clock timeout per transport attempt; `0` disables |
 | `retry.provider.maxRetries` | number | `0` | Provider/SDK retry attempts |
 | `retry.provider.maxRetryDelayMs` | number | `60000` | Max server-requested delay before failing (60s) |
 
