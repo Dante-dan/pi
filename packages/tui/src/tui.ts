@@ -878,6 +878,7 @@ export abstract class TuiBase extends Container implements TUI {
 
 	start(): void {
 		this.stopped = false;
+		this.renderNotBefore = 0;
 		this.beforeTerminalStart();
 		this.terminal.start(
 			(data) => this.handleTerminalInput(data),

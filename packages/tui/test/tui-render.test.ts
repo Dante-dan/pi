@@ -225,6 +225,28 @@ describe("TUI render scheduling", () => {
 		assert.ok(terminal.getWrites().includes("final transcript"));
 	});
 
+	it("does not carry an above-viewport redraw deadline across restart", async () => {
+		// Regression test for #9255.
+		const terminal = new LoggingVirtualTerminal(40, 5);
+		const tui: TUI = new TuiMainScreen(terminal);
+		const component = new TestComponent();
+		component.lines = Array.from({ length: 30 }, (_, index) => `Line ${index}`);
+		tui.addChild(component);
+		tui.start();
+		await terminal.waitForRender();
+
+		component.lines[0] = "background";
+		tui.requestRender();
+		await terminal.waitForRender();
+		tui.stop();
+		component.lines[0] = "restarted";
+		tui.start();
+		await new Promise((resolve) => setTimeout(resolve, 30));
+
+		assert.ok(terminal.getWrites().includes("restarted"), "restart should not inherit the old redraw deadline");
+		tui.stop();
+	});
+
 	it("renders keyboard input without waiting for a throttled frame", async () => {
 		const terminal = new VirtualTerminal(40, 10);
 		const tui: TUI = new TuiMainScreen(terminal);
