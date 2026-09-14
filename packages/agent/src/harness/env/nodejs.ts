@@ -35,6 +35,7 @@ import {
 	toError,
 } from "../types.ts";
 import { OutputCapture } from "../utils/output-capture.ts";
+import { type OwnedProcess, spawnOwnedProcess } from "./owned-process.ts";
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000;
@@ -439,7 +440,7 @@ export class NodeExecutionEnv implements ExecutionEnv {
 	cwd: string;
 	private shellPath?: string;
 	private shellEnv?: NodeJS.ProcessEnv;
-	private activeChildPids = new Set<number>();
+	private activeChildren = new Map<number, OwnedProcess>();
 
 	constructor(options: { cwd: string; shellPath?: string; shellEnv?: NodeJS.ProcessEnv }) {
 		this.cwd = options.cwd;
@@ -488,6 +489,9 @@ export class NodeExecutionEnv implements ExecutionEnv {
 			let callbackError: ExecutionError | undefined;
 			let spillError: ExecutionError | undefined;
 			let child: ReturnType<typeof spawn> | undefined;
+			let owned: OwnedProcess | undefined;
+			let termination: Promise<void> | undefined;
+			let terminationError: unknown;
 			let timeoutId: ReturnType<typeof setTimeout> | undefined;
 			const spillPrefix: SpillChunk[] = [];
 			let spillPath: string | undefined;
@@ -497,7 +501,9 @@ export class NodeExecutionEnv implements ExecutionEnv {
 			let spillBackpressured = false;
 
 			const onAbort = () => {
-				if (child?.pid) killProcessTree(child.pid);
+				termination ??= owned?.terminate().catch((error: unknown) => {
+					terminationError = error;
+				});
 			};
 			const failCallback = (error: unknown) => {
 				if (callbackError !== undefined) return;
@@ -522,7 +528,7 @@ export class NodeExecutionEnv implements ExecutionEnv {
 				settled = true;
 				if (timeoutId) clearTimeout(timeoutId);
 				if (signal) signal.removeEventListener("abort", onAbort);
-				if (child?.pid) this.activeChildPids.delete(child.pid);
+				if (child?.pid) this.activeChildren.delete(child.pid);
 				capture.dispose();
 				resolvePromise(result);
 			};
@@ -590,7 +596,7 @@ export class NodeExecutionEnv implements ExecutionEnv {
 
 			try {
 				const commandFromStdin = shellConfig.value.commandTransport === "stdin";
-				child = spawn(
+				owned = spawnOwnedProcess(
 					shellConfig.value.shell,
 					commandFromStdin ? shellConfig.value.args : [...shellConfig.value.args, command],
 					{
@@ -601,7 +607,8 @@ export class NodeExecutionEnv implements ExecutionEnv {
 						windowsHide: true,
 					},
 				);
-				if (child.pid) this.activeChildPids.add(child.pid);
+				child = owned.child;
+				if (child.pid) this.activeChildren.set(child.pid, owned);
 				if (commandFromStdin) {
 					child.stdin?.on("error", () => {});
 					child.stdin?.end(command);
@@ -654,7 +661,13 @@ export class NodeExecutionEnv implements ExecutionEnv {
 					(spillStream === undefined || spillBackpressured),
 			).then(
 				async ({ code, signal: exitSignal }) => {
+					await termination;
 					await finishSpill();
+					if (terminationError) {
+						const cause = toError(terminationError);
+						settle(err(new ExecutionError("unknown", cause.message, cause)));
+						return;
+					}
 					try {
 						capture.finish();
 						capture.flush();
@@ -918,7 +931,8 @@ export class NodeExecutionEnv implements ExecutionEnv {
 	}
 
 	async cleanup(_context: Context): Promise<void> {
-		for (const pid of this.activeChildPids) killProcessTree(pid);
-		this.activeChildPids.clear();
+		const children = [...this.activeChildren.values()];
+		this.activeChildren.clear();
+		await Promise.all(children.map((owned) => owned.terminate()));
 	}
 }

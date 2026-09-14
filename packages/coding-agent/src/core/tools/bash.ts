@@ -1,13 +1,12 @@
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { spawn } from "child_process";
+import { spawnOwnedProcess } from "@earendil-works/pi-agent-core/node";
 import { type Static, Type } from "typebox";
 import { waitForChildProcess } from "../../utils/child-process.ts";
 import {
 	getShellConfig,
 	getShellEnv,
-	killProcessTree,
 	type ShellConfig,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
@@ -91,13 +90,18 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			}
 
 			const commandFromStdin = shellConfig.commandTransport === "stdin";
-			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
-				cwd,
-				detached: process.platform !== "win32",
-				env: env ?? getShellEnv(),
-				stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
-				windowsHide: true,
-			});
+			const owned = spawnOwnedProcess(
+				shellConfig.shell,
+				commandFromStdin ? shellConfig.args : [...shellConfig.args, command],
+				{
+					cwd,
+					detached: process.platform !== "win32",
+					env: env ?? getShellEnv(),
+					stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
+					windowsHide: true,
+				},
+			);
+			const child = owned.child;
 			if (commandFromStdin) {
 				child.stdin?.on("error", () => {});
 				child.stdin?.end(command);
@@ -105,8 +109,12 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			if (child.pid) trackDetachedChildPid(child.pid);
 			let timedOut = false;
 			let timeoutHandle: NodeJS.Timeout | undefined;
+			let termination: Promise<void> | undefined;
+			let terminationError: unknown;
 			const onAbort = () => {
-				if (child.pid) killProcessTree(child.pid);
+				termination ??= owned.terminate().catch((error: unknown) => {
+					terminationError = error;
+				});
 			};
 
 			try {
@@ -114,7 +122,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				if (timeoutMs !== undefined) {
 					timeoutHandle = setTimeout(() => {
 						timedOut = true;
-						if (child.pid) killProcessTree(child.pid);
+						onAbort();
 					}, timeoutMs);
 				}
 				// Stream stdout and stderr.
@@ -128,6 +136,8 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				// Handle shell spawn errors and wait for the process to terminate without hanging
 				// on inherited stdio handles held by detached descendants.
 				const exitCode = await waitForChildProcess(child);
+				await termination;
+				if (terminationError) throw terminationError;
 				if (signal?.aborted) {
 					throw new Error("aborted");
 				}

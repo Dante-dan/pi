@@ -155,6 +155,11 @@ for platform in "${PLATFORMS[@]}"; do
     native_path="native/${native_platform%-*}/prebuilds"
     mkdir -p "$OUTPUT_DIR/$platform/$native_path"
     cp -R "../tui/$native_path/$native_platform" "$OUTPUT_DIR/$platform/$native_path/"
+    if [[ "$platform" == windows-* ]]; then
+        cp "../agent/$native_path/$native_platform/pi-process-job.exe" "$OUTPUT_DIR/$platform/$native_path/$native_platform/"
+        cp ../agent/native/win32/THIRD-PARTY-NOTICES.txt "$OUTPUT_DIR/$platform/native/win32/"
+        cp ../agent/native/win32/LLVM-LICENSE.txt "$OUTPUT_DIR/$platform/native/win32/"
+    fi
 done
 
 # Create archives

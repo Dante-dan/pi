@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { terminateOwnedProcess } from "@earendil-works/pi-agent-core/node";
 import { spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.ts";
 
@@ -214,6 +215,11 @@ export function killTrackedDetachedChildren(): void {
  * Kill a process and all its children (cross-platform)
  */
 export function killProcessTree(pid: number): void {
+	const termination = terminateOwnedProcess(pid);
+	if (termination) {
+		void termination.catch(() => {});
+		return;
+	}
 	if (process.platform === "win32") {
 		// Use the trusted System32 executable so cleanup does not depend on PATH.
 		try {
