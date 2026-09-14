@@ -15,16 +15,26 @@ function createFakeAnthropicClient(response: Response): Anthropic {
 	} as unknown as Anthropic;
 }
 
-function eventsWithCacheCreation(
-	cacheCreation: Record<string, number> | undefined,
-): Array<{ event: string; data: string }> {
+function eventsWithCacheCreation(options?: {
+	messageStartCacheCreation?: Record<string, number>;
+	messageStartCacheWrite?: number;
+	messageDeltaCacheCreation?: Record<string, number>;
+	messageDeltaCacheWrite?: number;
+}): Array<{ event: string; data: string }> {
 	const startUsage: Record<string, unknown> = {
 		input_tokens: 100,
 		output_tokens: 0,
 		cache_read_input_tokens: 0,
-		cache_creation_input_tokens: 1_000_000,
+		cache_creation_input_tokens: options?.messageStartCacheWrite ?? 1_000_000,
 	};
-	if (cacheCreation) startUsage.cache_creation = cacheCreation;
+	if (options?.messageStartCacheCreation) startUsage.cache_creation = options.messageStartCacheCreation;
+	const deltaUsage: Record<string, unknown> = {
+		input_tokens: 100,
+		output_tokens: 5,
+		cache_read_input_tokens: 0,
+		cache_creation_input_tokens: options?.messageDeltaCacheWrite ?? 1_000_000,
+	};
+	if (options?.messageDeltaCacheCreation) deltaUsage.cache_creation = options.messageDeltaCacheCreation;
 	return [
 		{
 			event: "message_start",
@@ -44,12 +54,7 @@ function eventsWithCacheCreation(
 			data: JSON.stringify({
 				type: "message_delta",
 				delta: { stop_reason: "end_turn" },
-				usage: {
-					input_tokens: 100,
-					output_tokens: 5,
-					cache_read_input_tokens: 0,
-					cache_creation_input_tokens: 1_000_000,
-				},
+				usage: deltaUsage,
 			}),
 		},
 		{ event: "message_stop", data: JSON.stringify({ type: "message_stop" }) },
@@ -63,7 +68,12 @@ describe("Anthropic 1h cache write cost", () => {
 	it("prices the 1h portion at 2x input and the rest at the 5m rate", async () => {
 		const model = getModel("anthropic", "claude-opus-4-8");
 		const response = createSseResponse(
-			eventsWithCacheCreation({ ephemeral_5m_input_tokens: 600_000, ephemeral_1h_input_tokens: 400_000 }),
+			eventsWithCacheCreation({
+				messageStartCacheCreation: {
+					ephemeral_5m_input_tokens: 600_000,
+					ephemeral_1h_input_tokens: 400_000,
+				},
+			}),
 		);
 		const result = await streamAnthropic(model, context, { client: createFakeAnthropicClient(response) }).result();
 
@@ -75,12 +85,32 @@ describe("Anthropic 1h cache write cost", () => {
 
 	it("falls back to the 5m rate when no breakdown is reported", async () => {
 		const model = getModel("anthropic", "claude-opus-4-8");
-		const response = createSseResponse(eventsWithCacheCreation(undefined));
+		const response = createSseResponse(eventsWithCacheCreation());
 		const result = await streamAnthropic(model, context, { client: createFakeAnthropicClient(response) }).result();
 
 		expect(result.usage.cacheWrite).toBe(1_000_000);
 		expect(result.usage.cacheWrite1h ?? 0).toBe(0);
 		// 1M * 6.25/Mtok = 6.25
 		expect(result.usage.cost.cacheWrite).toBeCloseTo(6.25, 10);
+	});
+
+	// Regression for #9210: Vercel AI Gateway reports the cache breakdown in message_delta.
+	it("prices 1h cache writes reported only in message_delta", async () => {
+		const model = getModel("anthropic", "claude-opus-4-8");
+		const response = createSseResponse(
+			eventsWithCacheCreation({
+				messageStartCacheWrite: 0,
+				messageDeltaCacheWrite: 6_535,
+				messageDeltaCacheCreation: {
+					ephemeral_5m_input_tokens: 0,
+					ephemeral_1h_input_tokens: 6_535,
+				},
+			}),
+		);
+		const result = await streamAnthropic(model, context, { client: createFakeAnthropicClient(response) }).result();
+
+		expect(result.usage.cacheWrite).toBe(6_535);
+		expect(result.usage.cacheWrite1h).toBe(6_535);
+		expect(result.usage.cost.cacheWrite).toBeCloseTo(0.06535, 10);
 	});
 });

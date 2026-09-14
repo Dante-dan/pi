@@ -763,6 +763,14 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 						if (event.usage.cache_creation_input_tokens != null) {
 							output.usage.cacheWrite = event.usage.cache_creation_input_tokens;
 						}
+						const cacheCreation = (
+							event.usage as typeof event.usage & {
+								cache_creation?: { ephemeral_1h_input_tokens?: number | null } | null;
+							}
+						).cache_creation;
+						if (cacheCreation?.ephemeral_1h_input_tokens != null) {
+							output.usage.cacheWrite1h = cacheCreation.ephemeral_1h_input_tokens;
+						}
 						// Anthropic reports reasoning tokens as a subset of output tokens.
 						const thinkingTokens = event.usage.output_tokens_details?.thinking_tokens;
 						if (thinkingTokens != null) {
