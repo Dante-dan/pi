@@ -1333,6 +1333,7 @@ function processBasetenModels(provider: ModelsDevProvider | undefined): Model<Ap
 		supportsUsageInStreaming: true,
 		maxTokensField: "max_tokens",
 		supportsStrictMode: true,
+		sendSessionAffinityHeaders: true,
 		supportsLongCacheRetention: false,
 	};
 	const reasoningEffortCompat: OpenAICompletionsCompat = {
