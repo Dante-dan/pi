@@ -258,6 +258,10 @@ const NVIDIA_NIM_UNSUPPORTED_MODELS = new Set([
 	"upstage/solar-10.7b-instruct",
 ]);
 const ZAI_TOOL_STREAM_UNSUPPORTED_MODELS = new Set(["glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4.5v"]);
+// The China Coding Plan only offers these two models. Legacy IDs are silently
+// rerouted server-side, so exposing them would attach stale metadata to the response.
+// https://docs.bigmodel.cn/cn/coding-plan/overview
+const ZAI_CODING_CN_MODEL_IDS = new Set(["glm-5.3", "glm-5.3-flash"]);
 const OPENCODE_GO_GLM52_THINKING_LEVEL_MAP = {
 	off: null,
 	minimal: null,
@@ -1281,6 +1285,7 @@ function processZaiModels(data: ModelsDevCatalog): Model<Api>[] {
 		for (const [modelId, model] of Object.entries(data[source]?.models ?? {})) {
 			const m = model as ModelsDevModel;
 			if (m.tool_call !== true) continue;
+			if (provider === "zai-coding-cn" && !ZAI_CODING_CN_MODEL_IDS.has(modelId)) continue;
 			const supportsImage = m.modalities?.input?.includes("image");
 
 			const thinkingLevelMap = getEffortThinkingLevelMap(m.reasoning_options ?? []);
