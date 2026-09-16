@@ -961,7 +961,11 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.api === "anthropic-messages" && isAnthropicTemperatureUnsupportedModel(model.id)) {
 		mergeAnthropicMessagesCompat(model, { supportsTemperature: false });
 	}
-	if (model.api === "openai-completions" && model.id.includes("deepseek-v4")) {
+	if (
+		model.api === "openai-completions" &&
+		model.id.includes("deepseek-v4") &&
+		model.thinkingLevelMap === undefined
+	) {
 		mergeThinkingLevelMap(
 			model,
 			model.provider === "openrouter"
@@ -2111,6 +2115,11 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					}
 				}
 
+				const thinkingLevelMap =
+					variant.provider === "opencode-go" && modelId.includes("deepseek-v4.1")
+						? getEffortThinkingLevelMap(m.reasoning_options ?? [])
+						: undefined;
+
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -2118,6 +2127,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					provider: variant.provider,
 					baseUrl,
 					reasoning: m.reasoning === true,
+					...(thinkingLevelMap ? { thinkingLevelMap } : {}),
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
 					cost: {
 						input: m.cost?.input || 0,
