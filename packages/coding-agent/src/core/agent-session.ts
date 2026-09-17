@@ -107,6 +107,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
+import { isRequestSizeError, reduceOverflowImages } from "./overflow-images.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import { exportSessionToJsonl } from "./session-export.ts";
@@ -353,6 +354,7 @@ export class AgentSession {
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
+	private _lastOverflowImageBytes = Number.POSITIVE_INFINITY;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -896,6 +898,7 @@ export class AgentSession {
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
 			this._overflowRecoveryAttempted = false;
+			this._lastOverflowImageBytes = Number.POSITIVE_INFINITY;
 			const messageText = contentText(event.message.content, "");
 			if (messageText) {
 				// Check steering queue first
@@ -947,6 +950,7 @@ export class AgentSession {
 				this._lastAssistantMessage = assistantMsg;
 				if (assistantMsg.stopReason !== "error" && assistantMsg.stopReason !== "length") {
 					this._overflowRecoveryAttempted = false;
+					this._lastOverflowImageBytes = Number.POSITIVE_INFINITY;
 				}
 
 				// Reset retry counter immediately on successful assistant response
@@ -2626,6 +2630,24 @@ export class AgentSession {
 			return false;
 		}
 
+		// A byte-size rejection can occur with too few tokens to compact. Shrink the
+		// images themselves before retrying, retaining the newest images and all text.
+		// Guard against extensions or compaction restoring an unchanged image payload.
+		if (sameModel && assistantMessage.stopReason === "error" && isRequestSizeError(assistantMessage.errorMessage)) {
+			const messages = this.agent.state.messages;
+			const recovery = reduceOverflowImages(messages);
+			if (recovery.imageBytes > 0 && recovery.imageBytes < this._lastOverflowImageBytes) {
+				this._lastOverflowImageBytes = recovery.imageBytes;
+				const lastMessage = recovery.messages[recovery.messages.length - 1];
+				this.agent.state.messages =
+					lastMessage?.role === "assistant" ? recovery.messages.slice(0, -1) : recovery.messages;
+				return true;
+			}
+			// Do not rebuild the original image payload through text compaction after
+			// image recovery has exhausted its progress. Keep the final provider error.
+			if (this._lastOverflowImageBytes !== Number.POSITIVE_INFINITY) return false;
+		}
+
 		// Automatic cases 1 and 2: context overflow.
 		// A length stop is recoverable when output ended below the model's original desired limit,
 		// independent of the configured context size or any context-clamped provider request limit.
@@ -3325,6 +3347,7 @@ export class AgentSession {
 	 */
 	private _isRetryableError(message: AssistantMessage): boolean {
 		// Context overflow is handled by compaction, not retry.
+		if (message.stopReason === "error" && isRequestSizeError(message.errorMessage)) return false;
 		if (isContextOverflow(message, this.model?.contextWindow ?? 0)) return false;
 		return isRetryableAssistantError(message);
 	}
