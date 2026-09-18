@@ -151,6 +151,13 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 							writeRawStdout(`${content.text}\n`);
 						}
 					}
+					if (
+						assistantMsg.stopReason === "length" &&
+						!assistantMsg.content.some((content) => content.type === "text" && content.text.length > 0)
+					) {
+						console.error("Response truncated by the output token limit; no text produced");
+						exitCode = 1;
+					}
 				}
 			}
 		}

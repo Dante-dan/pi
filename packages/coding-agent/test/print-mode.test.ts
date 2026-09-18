@@ -91,6 +91,41 @@ afterEach(() => {
 });
 
 describe("runPrintMode", () => {
+	// Regression for #9718: reasoning can exhaust the output budget before any text.
+	it.each([
+		{ content: [] },
+		{ content: [{ type: "thinking" as const, thinking: "reasoning" }] },
+		{ content: [{ type: "text" as const, text: "" }] },
+	])("reports output token exhaustion without text (%j)", async ({ content }) => {
+		const message = createAssistantMessage({ stopReason: "length" });
+		message.content = content;
+		const runtimeHost = createRuntimeHost(message);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+		});
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith("Response truncated by the output token limit; no text produced");
+		expect(runtimeHost.dispose).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([{ stopReason: "stop" as const }, { stopReason: "length" as const, text: "partial answer" }])(
+		"preserves text-mode success for %j",
+		async (options) => {
+			const runtimeHost = createRuntimeHost(createAssistantMessage(options));
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+				mode: "text",
+			});
+
+			expect(exitCode).toBe(0);
+			expect(errorSpy).not.toHaveBeenCalled();
+		},
+	);
+
 	it("emits session_shutdown in text mode", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
 		const { session } = runtimeHost;
