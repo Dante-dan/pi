@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const moduleRequire = createRequire(import.meta.url);
+const hostPlatform = process.platform;
 const ownedProcesses = new Map<number, OwnedProcess>();
 
 export interface OwnedProcess {
@@ -32,7 +33,7 @@ function windowsLauncher(): string {
 
 /** Process ownership is established before the Windows shell can create children. */
 export function spawnOwnedProcess(command: string, args: string[], options: SpawnOptions): OwnedProcess {
-	const launcher = process.platform === "win32" ? windowsLauncher() : undefined;
+	const launcher = hostPlatform === "win32" ? windowsLauncher() : undefined;
 	const id = randomUUID();
 	const child = launcher
 		? spawn(launcher, ["--run", id, String(process.pid), command, ...args], options)
