@@ -271,6 +271,33 @@ describe("Coding Agent Tools", () => {
 	});
 
 	describe("edit tool", () => {
+		// Regression for https://github.com/earendil-works/pi/issues/10074
+		it("rejects newly introduced nonprinting controls without changing the file", async () => {
+			const testFile = join(testDir, "edit-control.txt");
+			writeFileSync(testFile, "const word = '내';\n");
+
+			await expect(
+				editTool.execute("test-control", {
+					path: testFile,
+					edits: [{ oldText: "내", newText: "\b0b4" }],
+				}),
+			).rejects.toThrow(/control character U\+0008/);
+			expect(readFileSync(testFile, "utf-8")).toBe("const word = '내';\n");
+		});
+
+		it("permits existing controls, normal whitespace, and explicit intentional controls", async () => {
+			const testFile = join(testDir, "edit-control-intentional.txt");
+			writeFileSync(testFile, "a\bb\n");
+			await editTool.execute("test-existing-control", {
+				path: testFile,
+				edits: [{ oldText: "a\bb\n", newText: "a\bc\t\n" }],
+			});
+			await editTool.execute("test-intentional-control", {
+				path: testFile,
+				edits: [{ oldText: "c", newText: "c\f", allowControlCharacters: true }],
+			});
+			expect(readFileSync(testFile, "utf-8")).toBe("a\bc\f\t\n");
+		});
 		it("should replace text in file", async () => {
 			const testFile = join(testDir, "edit-test.txt");
 			const originalContent = "Hello, world!";

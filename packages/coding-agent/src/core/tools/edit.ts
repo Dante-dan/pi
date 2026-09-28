@@ -25,6 +25,12 @@ const replaceEditSchema = Type.Object(
 				"Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.",
 		}),
 		newText: Type.String({ description: "Replacement text for this targeted edit." }),
+		allowControlCharacters: Type.Optional(
+			Type.Boolean({
+				description:
+					"Set true only when the replacement intentionally adds nonprinting control characters (other than tab or line breaks).",
+			}),
+		),
 	},
 	{},
 );
@@ -136,6 +142,19 @@ function prepareEditArguments(input: unknown): EditToolInput {
 function validateEditInput(input: EditToolInput): { path: string; edits: Edit[] } {
 	if (!Array.isArray(input.edits) || input.edits.length === 0) {
 		throw new Error("Edit tool input is invalid. edits must contain at least one replacement.");
+	}
+	for (const edit of input.edits) {
+		if (edit.allowControlCharacters) continue;
+		for (let code = 0; code <= 127; code++) {
+			if (code === 9 || code === 10 || code === 13 || (code > 31 && code < 127)) continue;
+			const character = String.fromCharCode(code);
+			const count = (value: string): number => value.split(character).length - 1;
+			if (count(edit.newText) > count(edit.oldText)) {
+				throw new Error(
+					`Edit would add control character U+${code.toString(16).toUpperCase().padStart(4, "0")}. Retry with corrected text, or set allowControlCharacters when intentional.`,
+				);
+			}
+		}
 	}
 	return { path: input.path, edits: input.edits };
 }
