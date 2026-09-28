@@ -107,6 +107,37 @@ describe("openai-responses provider defaults", () => {
 		});
 	});
 
+	it.each([false, true])("respects supportsReasoningSummary=%s", async (supportsReasoningSummary) => {
+		// Regression for https://github.com/earendil-works/pi/issues/9508
+		const baseModel = getModel("openai", "gpt-5.4");
+		const model: Model<"openai-responses"> = {
+			...baseModel,
+			compat: { ...baseModel.compat, supportsReasoningSummary },
+		};
+		let capturedPayload: { reasoning?: { effort?: string; summary?: string } } | undefined;
+
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response("data: [DONE]\n\n", {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			}),
+		);
+		await streamOpenAIResponses(
+			model,
+			normalizeContext({ messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
+			{
+				apiKey: "test-key",
+				reasoningEffort: "high",
+				onPayload: (payload) => {
+					capturedPayload = payload as typeof capturedPayload;
+				},
+			},
+		).result();
+
+		expect(capturedPayload?.reasoning?.effort).toBe("high");
+		expect(capturedPayload?.reasoning?.summary).toBe(supportsReasoningSummary ? "auto" : undefined);
+	});
+
 	it("forwards required tool choice", async () => {
 		let capturedPayload: unknown;
 

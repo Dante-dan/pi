@@ -24,6 +24,7 @@ const emptyUsage: Usage = {
 
 const compat = {
 	supportsStore: true,
+	supportsTools: true,
 	supportsDeveloperRole: true,
 	supportsReasoningEffort: true,
 	supportsUsageInStreaming: true,

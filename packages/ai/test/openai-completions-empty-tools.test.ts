@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getModel, streamSimple } from "../src/compat.ts";
+import { getModel, normalizeContext, streamSimple } from "../src/compat.ts";
 
 // Empty tools arrays must NOT be serialized as `tools: []` — some OpenAI-compatible
 // backends (e.g. DashScope / Aliyun Qwen via compatible-mode) reject the request with
@@ -90,6 +90,25 @@ describe("openai-completions empty tools handling", () => {
 
 		const params = mockState.lastParams as { tools?: unknown };
 		expect("tools" in (params as object)).toBe(false);
+	});
+
+	it("omits tools and tool_choice when the model disables tools", async () => {
+		// Regression for https://github.com/earendil-works/pi/issues/9508
+		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
+		const model = { ...baseModel, api: "openai-completions", compat: { supportsTools: false } } as const;
+
+		await streamSimple(
+			model,
+			{
+				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
+				tools: [{ name: "ping", description: "Ping", parameters: { type: "object", properties: {} } }],
+			},
+			{ apiKey: "test", toolChoice: "none" },
+		).result();
+
+		const params = mockState.lastParams as { tools?: unknown; tool_choice?: unknown };
+		expect("tools" in params).toBe(false);
+		expect("tool_choice" in params).toBe(false);
 	});
 
 	it("sends default maxTokens", async () => {
@@ -253,52 +272,54 @@ describe("openai-completions empty tools handling", () => {
 	it("still emits tools: [] for Anthropic/LiteLLM proxy when conversation has tool history", async () => {
 		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
 		const model = { ...baseModel, api: "openai-completions" } as const;
-
-		await streamSimple(
-			model,
-			{
-				messages: [
-					{ role: "user", content: "use the tool", timestamp: Date.now() },
-					{
-						role: "assistant",
-						content: [
-							{
-								type: "toolCall",
-								id: "t1",
-								name: "noop",
-								arguments: {},
-							},
-						],
-						stopReason: "toolUse",
-						usage: {
-							input: 0,
-							output: 0,
-							cacheRead: 0,
-							cacheWrite: 0,
-							totalTokens: 0,
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		const context = normalizeContext({
+			messages: [
+				{ role: "user", content: "use the tool", timestamp: Date.now() },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "t1",
+							name: "noop",
+							arguments: {},
 						},
-						api: "openai-completions",
-						provider: "openai",
-						model: "gpt-4o-mini",
-						timestamp: Date.now(),
+					],
+					stopReason: "toolUse",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 					},
-					{
-						role: "toolResult",
-						toolCallId: "t1",
-						toolName: "noop",
-						content: [{ type: "text", text: "done" }],
-						isError: false,
-						timestamp: Date.now(),
-					},
-				],
-				tools: [],
-			},
-			{ apiKey: "test" },
-		).result();
+					api: "openai-completions",
+					provider: "openai",
+					model: "gpt-4o-mini",
+					timestamp: Date.now(),
+				},
+				{
+					role: "toolResult",
+					toolCallId: "t1",
+					toolName: "noop",
+					content: [{ type: "text", text: "done" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			],
+			tools: [],
+		});
+
+		await streamSimple(model, context, { apiKey: "test" }).result();
 
 		const params = mockState.lastParams as { tools?: unknown[] };
 		expect(Array.isArray(params.tools)).toBe(true);
 		expect(params.tools).toEqual([]);
+
+		// Regression for #9508: the proxy fallback must also respect supportsTools.
+		await streamSimple({ ...model, compat: { supportsTools: false } }, context, { apiKey: "test" }).result();
+		const withoutTools = mockState.lastParams as { tools?: unknown };
+		expect("tools" in withoutTools).toBe(false);
 	});
 });

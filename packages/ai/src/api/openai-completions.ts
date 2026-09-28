@@ -847,12 +847,12 @@ function buildParams(
 		params.temperature = options.temperature;
 	}
 
-	if (transcriptTools.requestTools.length > 0) {
+	if (compat.supportsTools && transcriptTools.requestTools.length > 0) {
 		params.tools = convertTools(transcriptTools.requestTools, compat);
 		if (compat.zaiToolStream) {
 			(params as any).tool_stream = true;
 		}
-	} else if (hasToolHistory(context.messages)) {
+	} else if (compat.supportsTools && hasToolHistory(context.messages)) {
 		// Anthropic (via LiteLLM/proxy) requires tools param when conversation has tool_calls/tool_results
 		params.tools = [];
 	}
@@ -861,7 +861,7 @@ function buildParams(
 		applyAnthropicCacheControl(messages, params.tools, cacheControl);
 	}
 
-	if (options?.toolChoice) {
+	if (compat.supportsTools && options?.toolChoice) {
 		params.tool_choice = options.toolChoice;
 	}
 
@@ -1635,6 +1635,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 
 	return {
 		supportsStore: !isNonStandard,
+		supportsTools: true,
 		supportsDeveloperRole: isOpenRouterDeveloperRoleModel || (!isNonStandard && !isOpenRouter),
 		supportsReasoningEffort:
 			!isGrok && !isZai && !isMoonshot && !isTogether && !isCloudflareAiGateway && !isNvidia && !isAntLing,
@@ -1691,6 +1692,7 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 
 	return {
 		supportsStore: model.compat.supportsStore ?? detected.supportsStore,
+		supportsTools: model.compat.supportsTools ?? detected.supportsTools,
 		supportsDeveloperRole: model.compat.supportsDeveloperRole ?? detected.supportsDeveloperRole,
 		supportsReasoningEffort: model.compat.supportsReasoningEffort ?? detected.supportsReasoningEffort,
 		supportsUsageInStreaming: model.compat.supportsUsageInStreaming ?? detected.supportsUsageInStreaming,
