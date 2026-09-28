@@ -55,13 +55,26 @@ async function routerAutoloadEnabled(
 	}
 }
 
-function contextWindowOf(model: LlamaModelInfo): number {
-	const reportedContextWindow = model.meta?.n_ctx ?? model.meta?.n_ctx_train;
-	return reportedContextWindow && reportedContextWindow > 0 ? reportedContextWindow : 128000;
+function contextWindowOf(model: LlamaModelInfo, previous?: number): number {
+	const runtimeContext = model.meta?.n_ctx;
+	if (runtimeContext && runtimeContext > 0) return runtimeContext;
+	const args = model.status.args ?? [];
+	for (let index = 0; index < args.length - 1; index++) {
+		if (args[index] !== "--ctx-size" && args[index] !== "-c" && args[index] !== "-ctx") continue;
+		const configuredContext = Number(args[index + 1]);
+		if (Number.isSafeInteger(configuredContext) && configuredContext > 0) return configuredContext;
+	}
+	if (previous && previous > 0) return previous;
+	const trainingContext = model.meta?.n_ctx_train;
+	return trainingContext && trainingContext > 0 ? trainingContext : 128000;
 }
 
 /** The same llama.cpp model used as a classifier: answers are read from next-token label probabilities. */
-function toPiClassifierModel(model: LlamaModelInfo, serverUrl: string): ClassifierModel<"llama-cpp-classify"> {
+function toPiClassifierModel(
+	model: LlamaModelInfo,
+	serverUrl: string,
+	previousContext?: number,
+): ClassifierModel<"llama-cpp-classify"> {
 	return {
 		type: "classifier",
 		id: model.id,
@@ -71,12 +84,17 @@ function toPiClassifierModel(model: LlamaModelInfo, serverUrl: string): Classifi
 		baseUrl: serverUrl,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: contextWindowOf(model),
+		contextWindow: contextWindowOf(model, previousContext),
 	};
 }
 
-function toPiModel(model: LlamaModelInfo, serverUrl: string, props?: LlamaServerProps): Model<"openai-completions"> {
-	const contextWindow = contextWindowOf(model);
+function toPiModel(
+	model: LlamaModelInfo,
+	serverUrl: string,
+	props?: LlamaServerProps,
+	previousContext?: number,
+): Model<"openai-completions"> {
+	const contextWindow = contextWindowOf(model, previousContext);
 	const reasoning = props?.chat_template?.includes("enable_thinking") === true;
 	return {
 		id: model.id,
@@ -205,17 +223,31 @@ export function createLlamaProvider(): LlamaProviderController {
 			const routerAutoload = await routerAutoloadEnabled(client, catalog, context.signal);
 			if (context.signal.aborted) return;
 			const selectable = catalog.filter((model) => modelIsSelectable(model, routerAutoload));
+			const previousContexts = new Map(
+				context.stored?.models
+					.filter(
+						(model): model is Model<"openai-completions"> =>
+							model.provider === LLAMA_PROVIDER_ID &&
+							isModelType(model, "chat") &&
+							model.api === "openai-completions" &&
+							model.baseUrl === llamaInferenceUrl(serverUrl),
+					)
+					.map((model) => [model.id, model.contextWindow] as const),
+			);
 			const refreshed = await Promise.all(
 				selectable.map(async (model) => {
 					// Only loaded models expose their template without side effects. Unloaded autoload presets
 					// would need to be loaded, while querying sleeping models may wake them. Those models remain
 					// unclassified until they are loaded or woken and a later catalog refresh discovers them.
-					if (model.status.value !== "loaded") return toPiModel(model, serverUrl);
+					if (model.status.value !== "loaded")
+						return toPiModel(model, serverUrl, undefined, previousContexts.get(model.id));
 					const props = await client.props({ model: model.id, signal: context.signal });
-					return toPiModel(model, serverUrl, props);
+					return toPiModel(model, serverUrl, props, previousContexts.get(model.id));
 				}),
 			);
-			const refreshedClassifiers = selectable.map((model) => toPiClassifierModel(model, serverUrl));
+			const refreshedClassifiers = selectable.map((model) =>
+				toPiClassifierModel(model, serverUrl, previousContexts.get(model.id)),
+			);
 			if (context.signal.aborted) return;
 			await context.publish({
 				persist: { models: [...refreshed, ...refreshedClassifiers], checkedAt: Date.now() },

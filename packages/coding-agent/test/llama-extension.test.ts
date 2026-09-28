@@ -202,6 +202,67 @@ describe("llama.cpp extension", () => {
 		]);
 	});
 
+	// Regression test for #10077: an unloaded router preset must not replace its known context with 128k.
+	it("keeps a known llama.cpp context while a preset is unloaded", async () => {
+		let status: "loaded" | "unloaded" = "loaded";
+		let args: string[] | undefined;
+		const { url } = await listen((request, response) => {
+			if (request.url === "/models") {
+				json(response, {
+					data: [
+						{
+							id: "preset",
+							status: { value: status, ...(args && { args }) },
+							source: "preset",
+							...(status === "loaded" && { meta: { n_ctx: 65536, n_ctx_train: 128000 } }),
+						},
+					],
+				});
+				return;
+			}
+			if (request.url === "/props" || request.url === "/props?model=preset&autoload=false") {
+				json(response, { models_autoload: true });
+				return;
+			}
+			response.writeHead(404).end();
+		});
+
+		let stored: ModelsStoreEntry | undefined;
+		const controller = createLlamaProvider();
+		const refresh = async () => {
+			await controller.provider.refreshModels?.({
+				credential: { type: "api_key", key: "local", env: { LLAMA_BASE_URL: url } },
+				stored,
+				publish: async (publication) => {
+					if (publication.persist && publication.persist !== null) stored = structuredClone(publication.persist);
+					publication.update?.();
+					return true;
+				},
+				allowNetwork: true,
+				signal: new AbortController().signal,
+			});
+		};
+		await refresh();
+		expect(stored?.models.map((model) => ("contextWindow" in model ? model.contextWindow : undefined))).toEqual([
+			65536, 65536,
+		]);
+
+		status = "unloaded";
+		await refresh();
+		expect(stored?.models.map((model) => ("contextWindow" in model ? model.contextWindow : undefined))).toEqual([
+			65536, 65536,
+		]);
+		expect(controller.provider.getModels()).toEqual([
+			expect.objectContaining({ id: "preset", contextWindow: 65536, maxTokens: 65536 }),
+		]);
+
+		args = ["llama-server", "--ctx-size", "32768"];
+		await refresh();
+		expect(stored?.models.map((model) => ("contextWindow" in model ? model.contextWindow : undefined))).toEqual([
+			32768, 32768,
+		]);
+	});
+
 	it("exposes unloaded presets only when router autoload is enabled", async () => {
 		let propsRequests = 0;
 		const { url } = await listen((request, response) => {
