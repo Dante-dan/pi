@@ -11,6 +11,12 @@ import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 const writeSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to write (relative or absolute)" }),
 	content: Type.String({ description: "Content to write to the file" }),
+	allowControlCharacters: Type.Optional(
+		Type.Boolean({
+			description:
+				"Set true only when the file intentionally contains nonprinting control characters (other than tab or line breaks).",
+		}),
+	),
 });
 
 export const writeToolSystemPromptContribution = {
@@ -57,11 +63,21 @@ export function createWriteToolDefinition(
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		async execute(
 			_toolCallId,
-			{ path, content }: { path: string; content: string },
+			{ path, content, allowControlCharacters }: WriteToolInput,
 			signal?: AbortSignal,
 			_onUpdate?,
 			ctx?: ExtensionContext,
 		) {
+			if (!allowControlCharacters) {
+				for (const character of content) {
+					const code = character.charCodeAt(0);
+					if ((code < 32 && code !== 9 && code !== 10 && code !== 13) || code === 127) {
+						throw new Error(
+							`Write contains control character U+${code.toString(16).toUpperCase().padStart(4, "0")}. Retry with corrected text, or set allowControlCharacters when intentional.`,
+						);
+					}
+				}
+			}
 			const absolutePath = resolveToCwd(path, ctx?.cwd || cwd);
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(absolutePath, async () => {

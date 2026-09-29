@@ -250,6 +250,27 @@ describe("Coding Agent Tools", () => {
 	});
 
 	describe("write tool", () => {
+		// Regression for https://github.com/earendil-works/pi/issues/10074
+		it("rejects malformed-escape controls before overwriting a file", async () => {
+			const testFile = join(testDir, "write-control.txt");
+			writeFileSync(testFile, "original");
+			await expect(writeTool.execute("test-write-control", { path: testFile, content: "\b0b4" })).rejects.toThrow(
+				/control character U\+0008/,
+			);
+			expect(readFileSync(testFile, "utf-8")).toBe("original");
+		});
+
+		it("permits whitespace and explicitly intentional controls", async () => {
+			const testFile = join(testDir, "write-intentional-control.txt");
+			await writeTool.execute("test-write-whitespace", { path: testFile, content: "한글\t\n" });
+			await writeTool.execute("test-write-intentional-control", {
+				path: testFile,
+				content: "한글\f\n",
+				allowControlCharacters: true,
+			});
+			expect(readFileSync(testFile, "utf-8")).toBe("한글\f\n");
+		});
+
 		it("should write file contents", async () => {
 			const testFile = join(testDir, "write-test.txt");
 			const content = "Test content";
