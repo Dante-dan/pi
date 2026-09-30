@@ -774,6 +774,32 @@ Content`,
 			);
 		});
 
+		it("should retain managed pnpm peer settings when uninstalling packages", async () => {
+			// Regression for #10202.
+			settingsManager = SettingsManager.inMemory({ npmCommand: ["pnpm"] });
+			packageManager = new DefaultPackageManager({ cwd: tempDir, agentDir, settingsManager });
+			mkdirSync(join(agentDir, "npm"), { recursive: true });
+			const runCommandSpy = vi
+				.spyOn(packageManager as unknown as PackageManagerInternals, "runCommand")
+				.mockResolvedValue(undefined);
+
+			await packageManager.remove("npm:@scope/pkg");
+
+			expect(runCommandSpy).toHaveBeenCalledWith(
+				"pnpm",
+				[
+					"uninstall",
+					"@scope/pkg",
+					"--prefix",
+					join(agentDir, "npm"),
+					"--config.auto-install-peers=false",
+					"--config.strict-peer-dependencies=false",
+					"--config.strict-dep-builds=false",
+				],
+				undefined,
+			);
+		});
+
 		it("should use bun --cwd for npm package installs", async () => {
 			settingsManager = SettingsManager.inMemory({
 				npmCommand: ["mise", "exec", "bun@1", "--", "bun"],

@@ -1882,7 +1882,13 @@ export class DefaultPackageManager implements PackageManager {
 			return;
 		}
 		const args = ["uninstall", source.name, "--prefix", installRoot];
-		if (packageManagerName !== "pnpm") {
+		if (packageManagerName === "pnpm") {
+			args.push(
+				"--config.auto-install-peers=false",
+				"--config.strict-peer-dependencies=false",
+				"--config.strict-dep-builds=false",
+			);
+		} else {
 			args.push("--legacy-peer-deps");
 		}
 		await this.runNpmCommand(args);
