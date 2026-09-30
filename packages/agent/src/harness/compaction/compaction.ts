@@ -19,6 +19,7 @@ import { buildContextEntries, sessionEntryToContextMessages } from "../session/c
 import type { CompactionEntry, Entry, JsonValue } from "../session/types.ts";
 import { CompactionError, err, ok, type Result } from "../types.ts";
 import { addUsage } from "../utils/usage.ts";
+import { countImages } from "./image-count.ts";
 import {
 	computeFileLists,
 	createFileOps,
@@ -634,6 +635,7 @@ export interface CompactionPreparation {
 export function prepareCompaction(
 	pathEntries: Entry[],
 	settings: CompactionSettings,
+	maxImages?: number,
 ): Result<CompactionPreparation | undefined, CompactionError> {
 	if (pathEntries.length === 0 || pathEntries[pathEntries.length - 1].type === "compaction") {
 		return ok(undefined);
@@ -668,7 +670,30 @@ export function prepareCompaction(
 		buildContextEntries(pathEntries).flatMap(sessionEntryToContextMessages),
 	).tokens;
 
-	const cutPoint = findCutPoint(compactableEntries, 0, boundaryEnd, settings.keepRecentTokens);
+	let cutPoint = findCutPoint(compactableEntries, 0, boundaryEnd, settings.keepRecentTokens);
+	if (maxImages !== undefined) {
+		// Move only across legal message boundaries; never orphan a tool result or mutate history.
+		const cutIndex = findValidCutPoints(compactableEntries, 0, boundaryEnd).find(
+			(index) =>
+				index >= cutPoint.firstKeptEntryIndex &&
+				index > 0 &&
+				countImages(
+					compactableEntries.slice(index).flatMap((entry) => {
+						const message = getMessageFromEntryForCompaction(entry);
+						return message ? [message] : [];
+					}),
+				) <= maxImages,
+		);
+		if (cutIndex === undefined) return ok(undefined);
+		const isUserMessage =
+			compactableEntries[cutIndex].type === "message" && compactableEntries[cutIndex].message.role === "user";
+		const turnStartIndex = isUserMessage ? -1 : findTurnStartIndex(compactableEntries, cutIndex, 0);
+		cutPoint = {
+			firstKeptEntryIndex: cutIndex,
+			turnStartIndex,
+			isSplitTurn: !isUserMessage && turnStartIndex !== -1,
+		};
+	}
 	const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
 	const messagesToSummarize: AgentMessage[] = [];
 	for (let i = 0; i < historyEnd; i++) {

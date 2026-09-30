@@ -286,6 +286,75 @@ afterEach(async () => {
 });
 
 describe("runtime structural drive", () => {
+	// Regression: https://github.com/earendil-works/pi/issues/10162
+	it.each([false, true])("bounds image-count recovery (already used: %s)", async (alreadyUsed) => {
+		const fixture = await createFixture();
+		const ready = {
+			...runScope({ enabled: true, reserveTokens: 1_000, keepRecentTokens: 1_000_000 }),
+			at: "assistant.ready",
+			generationContext: {
+				stepId: "step",
+				triggerEntryId: "tip",
+				configuration: fixture.configuration,
+				streamOptions: {},
+				retryPolicy: { maxAttempts: 2, baseDelayMs: 10, maxAgentDelayMs: 30_000 },
+				overflowRecoveryUsed: alreadyUsed,
+			},
+			nextAttempt: 1,
+		} as const;
+		await installOperation(
+			fixture,
+			ready,
+			{ kind: "run", promptEntryIds: ["tip"] },
+			{
+				entries: [
+					{
+						id: "images",
+						parentId: null,
+						type: "message",
+						message: {
+							role: "user",
+							timestamp: 1,
+							content: Array.from({ length: 31 }, () => ({
+								type: "image" as const,
+								data: "",
+								mimeType: "image/png",
+							})),
+						},
+					},
+					{ id: "tip", parentId: "images", type: "message", message: user("continue the task") },
+				],
+			},
+		);
+		fixture.faux.setResponses([
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "Too many images in request: 31 > 30" }),
+		]);
+		const result = await runGeneration(fixture.lane, fixture.drive, ready);
+		if (alreadyUsed) {
+			expect(result).toMatchObject({
+				kind: "settled",
+				outcome: { status: "failed", error: { message: expect.stringContaining("Reduce images") } },
+			});
+			expect(fixture.events.filter((event) => event.type === "compaction_start")).toHaveLength(0);
+		} else {
+			expect(result).toEqual({ kind: "continue" });
+			const deciding = currentState(fixture);
+			if (deciding.at !== "summary.deciding") throw new Error("image-count error did not enter recovery");
+			expect(deciding.task.boundary).toMatchObject({
+				resumeAfter: { continuation: { overflowRecoveryUsed: true } },
+			});
+			const preparation = await fixture.session.getValue(
+				storedValues.operationPreparation(operationId, deciding.task.taskId),
+				BACKGROUND_CONTEXT,
+			);
+			expect(preparation?.value).toMatchObject({ retainedTail: [user("continue the task")] });
+			expect(await fixture.session.getEntry("images", BACKGROUND_CONTEXT)).toMatchObject({
+				type: "message",
+				message: { content: expect.arrayContaining([{ type: "image", data: "", mimeType: "image/png" }]) },
+			});
+		}
+	});
+
 	it("routes a declined threshold directly to assistant generation", async () => {
 		const fixture = await createFixture();
 		const model = fixture.faux.getModel();
