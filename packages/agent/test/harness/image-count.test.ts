@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_COMPACTION_SETTINGS, prepareCompaction } from "../../src/harness/compaction/compaction.ts";
-import { countImages, imageCountLimit } from "../../src/harness/compaction/image-count.ts";
+import { imageCountLimit } from "../../src/harness/compaction/image-count.ts";
 import type { Entry } from "../../src/harness/session/types.ts";
 import { getOrThrow } from "../../src/harness/types.ts";
 import type { AgentMessage } from "../../src/types.ts";
@@ -42,21 +42,17 @@ describe("image-count recovery preparation", () => {
 		expect(imageCountLimit(error)).toBeUndefined();
 	});
 
-	it.each([30, 4])("reduces an image-heavy retained tail below %i without mutating history", (limit) => {
-		const history = entries([imageMessage(limit), imageMessage(2), imageMessage(1)]);
+	it("keeps the ordinary recent tail and leaves persisted images intact", () => {
+		const history = entries([imageMessage(30), imageMessage(2), imageMessage(1)]);
 		const original = JSON.stringify(history);
 		const prepared = getOrThrow(
-			prepareCompaction(history, { ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 1_000_000 }, limit),
+			prepareCompaction(history, { ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 1_000_000 }),
 		);
 		expect(prepared).toBeDefined();
-		expect(countImages(prepared!.retainedTail)).toBe(3);
-		expect(prepared!.messagesToSummarize).toEqual([history[0].type === "message" ? history[0].message : undefined]);
+		expect(prepared!.retainedTail).toEqual(
+			history.map((entry) => (entry.type === "message" ? entry.message : undefined)),
+		);
+		expect(prepared!.messagesToSummarize).toEqual([]);
 		expect(JSON.stringify(history)).toBe(original);
-	});
-
-	it("declines recovery when the last indivisible message exceeds the limit", () => {
-		expect(
-			getOrThrow(prepareCompaction(entries([imageMessage(1), imageMessage(31)]), DEFAULT_COMPACTION_SETTINGS, 30)),
-		).toBeUndefined();
 	});
 });

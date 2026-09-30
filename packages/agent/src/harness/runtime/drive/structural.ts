@@ -1156,12 +1156,11 @@ export async function prepareOverflowCompaction<TContext extends object | undefi
 	lane: Lane<TContext>,
 	drive: Drive,
 	generation: AssistantEffectPendingOperation,
-	maxImages?: number,
 ): Promise<{ taskId: string; preparation: DurableStructuralPreparation } | undefined> {
 	if (generation.generationContext.overflowRecoveryUsed) return undefined;
 	const path = await readBoundedEntries(lane, drive, generation);
 	if (path.kind === "cancel_requested") return undefined;
-	const prepared = prepareCompaction(path.value, generation.settings.compaction, maxImages);
+	const prepared = prepareCompaction(path.value, generation.settings.compaction);
 	if (!prepared.ok) throw prepared.error;
 	if (prepared.value === undefined) return undefined;
 	return {

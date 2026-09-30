@@ -19,7 +19,6 @@ import { buildContextEntries, sessionEntryToContextMessages } from "../session/c
 import type { CompactionEntry, Entry, JsonValue } from "../session/types.ts";
 import { CompactionError, err, ok, type Result } from "../types.ts";
 import { addUsage } from "../utils/usage.ts";
-import { countImages } from "./image-count.ts";
 import {
 	computeFileLists,
 	createFileOps,
@@ -148,6 +147,8 @@ export async function completeSimpleWithRetries(
 export interface CompactionSettings {
 	/** Enable automatic compaction decisions. */
 	enabled: boolean;
+	/** Opt in to compaction after an explicit image-count rejection, independently of token thresholds. */
+	enabledOnError?: boolean;
 	/** Tokens reserved for summary prompt and output. */
 	reserveTokens: number;
 	/** Approximate recent-context tokens to keep after compaction. */
@@ -157,6 +158,7 @@ export interface CompactionSettings {
 /** Default compaction settings used by the harness. */
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
+	enabledOnError: false,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
 };
@@ -635,7 +637,6 @@ export interface CompactionPreparation {
 export function prepareCompaction(
 	pathEntries: Entry[],
 	settings: CompactionSettings,
-	maxImages?: number,
 ): Result<CompactionPreparation | undefined, CompactionError> {
 	if (pathEntries.length === 0 || pathEntries[pathEntries.length - 1].type === "compaction") {
 		return ok(undefined);
@@ -670,30 +671,7 @@ export function prepareCompaction(
 		buildContextEntries(pathEntries).flatMap(sessionEntryToContextMessages),
 	).tokens;
 
-	let cutPoint = findCutPoint(compactableEntries, 0, boundaryEnd, settings.keepRecentTokens);
-	if (maxImages !== undefined) {
-		// Move only across legal message boundaries; never orphan a tool result or mutate history.
-		const cutIndex = findValidCutPoints(compactableEntries, 0, boundaryEnd).find(
-			(index) =>
-				index >= cutPoint.firstKeptEntryIndex &&
-				index > 0 &&
-				countImages(
-					compactableEntries.slice(index).flatMap((entry) => {
-						const message = getMessageFromEntryForCompaction(entry);
-						return message ? [message] : [];
-					}),
-				) <= maxImages,
-		);
-		if (cutIndex === undefined) return ok(undefined);
-		const isUserMessage =
-			compactableEntries[cutIndex].type === "message" && compactableEntries[cutIndex].message.role === "user";
-		const turnStartIndex = isUserMessage ? -1 : findTurnStartIndex(compactableEntries, cutIndex, 0);
-		cutPoint = {
-			firstKeptEntryIndex: cutIndex,
-			turnStartIndex,
-			isSplitTurn: !isUserMessage && turnStartIndex !== -1,
-		};
-	}
+	const cutPoint = findCutPoint(compactableEntries, 0, boundaryEnd, settings.keepRecentTokens);
 	const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
 	const messagesToSummarize: AgentMessage[] = [];
 	for (let i = 0; i < historyEnd; i++) {

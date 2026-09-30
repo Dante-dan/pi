@@ -187,15 +187,19 @@ export async function publishResponse<TContext extends object | undefined>(
 	response: SettledAssistantMessage,
 	options: { recovery?: true } = {},
 ): Promise<ProcedureResult> {
-	const maxImages = response.stopReason === "error" ? imageCountLimit(response.errorMessage) : undefined;
+	const imageCountError =
+		intent.at === "assistant.effect_pending" &&
+		intent.settings.compaction.enabledOnError === true &&
+		response.stopReason === "error" &&
+		imageCountLimit(response.errorMessage) !== undefined;
 	const overflow =
 		intent.at === "assistant.effect_pending" &&
-		(maxImages !== undefined ||
+		(imageCountError ||
 			isContextOverflow(response, intent.contextWindow) ||
 			isRecoverableLength(response, intent.intendedOutputLimit));
 	const overflowPreparation =
 		overflow && !intent.generationContext.overflowRecoveryUsed
-			? await prepareOverflowCompaction(lane, drive, intent, maxImages)
+			? await prepareOverflowCompaction(lane, drive, intent)
 			: undefined;
 	return lane.settleOperation<ResponseIntent, ProcedureResult>(
 		intent,
@@ -231,7 +235,7 @@ export async function publishResponse<TContext extends object | undefined>(
 					response.errorMessage ?? "Assistant request exceeded the context window",
 				);
 				if (current.generationContext.overflowRecoveryUsed || overflowPreparation === undefined) {
-					if (maxImages !== undefined) {
+					if (imageCountError) {
 						committed = normalizeError(
 							response,
 							`${response.errorMessage}\nImage-count recovery could not continue. Reduce images in the latest turn or start a new session.`,

@@ -287,10 +287,15 @@ afterEach(async () => {
 
 describe("runtime structural drive", () => {
 	// Regression: https://github.com/earendil-works/pi/issues/10162
-	it.each([false, true])("bounds image-count recovery (already used: %s)", async (alreadyUsed) => {
+	it.each([
+		[true, false],
+		[true, true],
+		[false, false],
+		[undefined, false],
+	])("bounds opt-in image-count recovery (enabled: %s, already used: %s)", async (enabledOnError, alreadyUsed) => {
 		const fixture = await createFixture();
 		const ready = {
-			...runScope({ enabled: true, reserveTokens: 1_000, keepRecentTokens: 1_000_000 }),
+			...runScope({ enabled: false, enabledOnError, reserveTokens: 1_000, keepRecentTokens: 1_000_000 }),
 			at: "assistant.ready",
 			generationContext: {
 				stepId: "step",
@@ -330,10 +335,10 @@ describe("runtime structural drive", () => {
 			fauxAssistantMessage("", { stopReason: "error", errorMessage: "Too many images in request: 31 > 30" }),
 		]);
 		const result = await runGeneration(fixture.lane, fixture.drive, ready);
-		if (alreadyUsed) {
+		if (alreadyUsed || !enabledOnError) {
 			expect(result).toMatchObject({
 				kind: "settled",
-				outcome: { status: "failed", error: { message: expect.stringContaining("Reduce images") } },
+				outcome: { status: "failed", error: { message: expect.stringContaining("Too many images in request") } },
 			});
 			expect(fixture.events.filter((event) => event.type === "compaction_start")).toHaveLength(0);
 		} else {
@@ -347,7 +352,12 @@ describe("runtime structural drive", () => {
 				storedValues.operationPreparation(operationId, deciding.task.taskId),
 				BACKGROUND_CONTEXT,
 			);
-			expect(preparation?.value).toMatchObject({ retainedTail: [user("continue the task")] });
+			expect(preparation?.value).toMatchObject({
+				retainedTail: [
+					expect.objectContaining({ role: "user", content: expect.any(Array) }),
+					user("continue the task"),
+				],
+			});
 			expect(await fixture.session.getEntry("images", BACKGROUND_CONTEXT)).toMatchObject({
 				type: "message",
 				message: { content: expect.arrayContaining([{ type: "image", data: "", mimeType: "image/png" }]) },
