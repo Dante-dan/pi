@@ -170,13 +170,21 @@ export function isContextOverflow(message: AssistantMessage, contextWindow?: num
 }
 
 /**
- * Check whether a length stop ended below the caller or model's intended output limit.
- * Such responses may be caused by context pressure or provider-side truncation, so callers
- * can make one bounded compact-and-retry attempt. `desiredMaxOutput` must be the original
- * limit before any context-based clamping.
+ * Check whether a length stop below the intended output limit could be caused by
+ * context pressure. Some gateways under-report output tokens on reasoning turns,
+ * so a short output alone is not evidence that compacting the input would help.
+ * `desiredMaxOutput` must be the original limit before context-based clamping.
  */
-export function isRecoverableLength(message: AssistantMessage, desiredMaxOutput: number): boolean {
-	return message.stopReason === "length" && desiredMaxOutput > 0 && message.usage.output < desiredMaxOutput;
+export function isRecoverableLength(
+	message: AssistantMessage,
+	desiredMaxOutput: number,
+	contextWindow: number,
+): boolean {
+	if (message.stopReason !== "length" || desiredMaxOutput <= 0 || message.usage.output >= desiredMaxOutput) {
+		return false;
+	}
+	const inputTokens = message.usage.input + message.usage.cacheRead + message.usage.cacheWrite;
+	return contextWindow > 0 && inputTokens + desiredMaxOutput > contextWindow;
 }
 
 /**

@@ -674,7 +674,8 @@ describe("AgentSession compaction characterization", () => {
 
 	it("stops after one compact-and-retry when a second response is also truncated", async () => {
 		const harness = await createHarness({
-			models: [{ id: "faux-1", contextWindow: 1_000_000, maxTokens: 100 }],
+			// #9793: both attempts must still be context-limited, including after compaction.
+			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 1000 }],
 			settings: { compaction: { keepRecentTokens: 1, reserveTokens: 0 } },
 			extensionFactories: [
 				(pi) => {

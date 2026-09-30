@@ -166,17 +166,37 @@ describe("isContextOverflow", () => {
 			provider: "openai",
 			model: "gpt-5.6-sol",
 		});
-		expect(isRecoverableLength(message, 128000)).toBe(true);
+		expect(isRecoverableLength(message, 128000, 262144)).toBe(true);
 	});
 
 	it("does not recover a length stop that reached the desired output limit", () => {
 		const message = createLengthStopMessage({ input: 4062, cacheRead: 0, output: 1024 });
-		expect(isRecoverableLength(message, 1024)).toBe(false);
+		expect(isRecoverableLength(message, 1024, 4096)).toBe(false);
 	});
 
-	it("treats zero-output length stops as recoverable without context metadata", () => {
+	// #9793 must preserve #7540 recovery below the old 99% context threshold.
+	it("recovers when the intended output does not fit below 99 percent context usage", () => {
+		const message = createLengthStopMessage({ input: 268009, cacheRead: 0, output: 16 });
+		expect(isRecoverableLength(message, 4096, 272000)).toBe(true);
+	});
+
+	it("does not compact zero-output length stops without context metadata", () => {
 		const message = createLengthStopMessage({ input: 100, cacheRead: 0, output: 0 });
-		expect(isRecoverableLength(message, 128000)).toBe(true);
+		expect(isRecoverableLength(message, 128000, 0)).toBe(false);
+	});
+
+	// Regression for #9793: inconsistent streaming usage must not drop working history.
+	it.each([0, 2883, 15203])("does not recover low-context length stops with output %i", (output) => {
+		const message = createLengthStopMessage({ input: 107687, cacheRead: 0, output });
+		expect(isRecoverableLength(message, 16384, 1000000)).toBe(false);
+	});
+
+	it("counts cached input and only recovers when the intended output no longer fits", () => {
+		const message = createLengthStopMessage({ input: 100, cacheRead: 800, cacheWrite: 100, output: 10 });
+		expect(isRecoverableLength(message, 200, 1200)).toBe(false);
+		expect(isRecoverableLength(message, 200, 1199)).toBe(true);
+		message.stopReason = "stop";
+		expect(isRecoverableLength(message, 200, 1199)).toBe(false);
 	});
 
 	it("does not treat normal length stops with output as context overflow", () => {

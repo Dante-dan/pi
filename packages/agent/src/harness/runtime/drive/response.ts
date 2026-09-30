@@ -188,7 +188,8 @@ export async function publishResponse<TContext extends object | undefined>(
 ): Promise<ProcedureResult> {
 	const overflow =
 		intent.at === "assistant.effect_pending" &&
-		(isContextOverflow(response, intent.contextWindow) || isRecoverableLength(response, intent.intendedOutputLimit));
+		(isContextOverflow(response, intent.contextWindow) ||
+			isRecoverableLength(response, intent.intendedOutputLimit, intent.contextWindow));
 	const overflowPreparation =
 		overflow && !intent.generationContext.overflowRecoveryUsed
 			? await prepareOverflowCompaction(lane, drive, intent)

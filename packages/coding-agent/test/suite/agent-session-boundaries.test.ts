@@ -785,7 +785,8 @@ describe("durable length recovery", () => {
 			execute: async () => ({ content: [{ type: "text", text: "done" }], details: {} }),
 		};
 		const harness = await createHarness({
-			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 100 }],
+			// #9793: exercise a second context-limited length stop after the history shrinks.
+			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 1000 }],
 			settings: { compaction: { keepRecentTokens: 1, reserveTokens: 0 } },
 			tools: [tool],
 			extensionFactories: [
@@ -907,6 +908,8 @@ describe("durable length recovery", () => {
 			stopReason: "length",
 			timestamp: Date.now() - 1,
 		});
+		// #9793: this persisted response came from an input that exhausted the output budget.
+		partial.usage = { ...partial.usage, input: 950, totalTokens: 950 };
 		const partialId = harness.sessionManager.appendMessage(partial);
 		harness.sessionManager.appendContextEdit(partialId, {
 			content: [{ type: "text", text: "edited partial" }],

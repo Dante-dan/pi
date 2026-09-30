@@ -2890,8 +2890,8 @@ export class AgentSession {
 		}
 
 		// Automatic cases 1 and 2: context overflow.
-		// A length stop is recoverable when output ended below the model's original desired limit,
-		// independent of the configured context size or any context-clamped provider request limit.
+		// Recover a length stop only when input plus the original desired output exceeds
+		// the context window; short output alone can be inconsistent gateway accounting.
 		const currentProjection = this.sessionManager.buildSessionProjection();
 		const assistantEntryId = this._findPersistedMessageEntryId(assistantMessage);
 		const assistantIsProjected =
@@ -2921,7 +2921,9 @@ export class AgentSession {
 			((explicitOverflow && assistantRetainedForExplicitRecovery) ||
 				(assistantUsageMatchesProjection && isContextOverflow(assistantMessage, contextWindow)));
 		const recoverableLength =
-			sameModel && assistantIsProjected && isRecoverableLength(assistantMessage, messageModel.maxTokens);
+			sameModel &&
+			assistantIsProjected &&
+			isRecoverableLength(assistantMessage, messageModel.maxTokens, contextWindow);
 		if (contextOverflow || recoverableLength) {
 			const willRetry = assistantMessage.stopReason !== "stop";
 
