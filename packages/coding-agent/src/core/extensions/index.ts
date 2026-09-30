@@ -89,6 +89,7 @@ export type {
 	// Runtime
 	ExtensionRuntime,
 	ExtensionShortcut,
+	ExtensionSystemPromptContribution,
 	ExtensionToolContext,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -163,6 +164,7 @@ export type {
 	SessionShutdownEvent,
 	// Events - Session
 	SessionStartEvent,
+	SessionStartEventResult,
 	SessionTreeEvent,
 	SetActiveToolsHandler,
 	SetLabelHandler,

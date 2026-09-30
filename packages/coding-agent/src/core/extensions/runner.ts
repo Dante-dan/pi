@@ -21,6 +21,7 @@ import type { SessionManager } from "../session-manager.ts";
 import {
 	type BuildSystemPromptOptions,
 	buildSystemPrompt,
+	type ExtensionSystemPromptContribution,
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "../system-prompt.ts";
@@ -80,6 +81,8 @@ import type {
 	SessionBeforeTreeResult,
 	SessionBoundaryDraft,
 	SessionShutdownEvent,
+	SessionStartEvent,
+	SessionStartEventResult,
 	ToolCallEvent,
 	ToolCallEventResult,
 	ToolResultEvent,
@@ -184,6 +187,7 @@ type RunnerEmitEvent = Exclude<
 	| BeforeProviderRequestEvent
 	| BeforeProviderHeadersEvent
 	| BeforeAgentStartEvent
+	| SessionStartEvent
 	| MessageEndEvent
 	| ResourcesDiscoverEvent
 	| InputEvent
@@ -1406,6 +1410,30 @@ export class ExtensionRunner {
 		}
 
 		return headers;
+	}
+
+	/** Collect session-scoped prompt text without exposing earlier handlers' results to later handlers. */
+	async emitSessionStart(event: SessionStartEvent): Promise<ExtensionSystemPromptContribution[]> {
+		const ctx = this.createContext();
+		const contributions: ExtensionSystemPromptContribution[] = [];
+		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "session_start")) {
+			for (const handler of handlers) {
+				try {
+					const result = (await handler(event, ctx)) as SessionStartEventResult | undefined;
+					if (!result || typeof result !== "object" || typeof result.systemPromptAppend !== "string") continue;
+					const content = result.systemPromptAppend.trim();
+					if (content) contributions.push({ content, sourceInfo: ext.sourceInfo });
+				} catch (err) {
+					this.emitError({
+						extensionPath: ext.path,
+						event: "session_start",
+						error: err instanceof Error ? err.message : String(err),
+						stack: err instanceof Error ? err.stack : undefined,
+					});
+				}
+			}
+		}
+		return contributions;
 	}
 
 	async emitBeforeAgentStart(

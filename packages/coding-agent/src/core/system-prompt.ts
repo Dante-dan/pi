@@ -5,6 +5,12 @@
 import { getSystemMessageText } from "@earendil-works/pi-ai";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
+import type { SourceInfo } from "./source-info.ts";
+
+export interface ExtensionSystemPromptContribution {
+	readonly content: string;
+	readonly sourceInfo: SourceInfo;
+}
 
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces the default prefix). */
@@ -21,6 +27,8 @@ export interface BuildSystemPromptOptions {
 	promptGuidelines?: string[];
 	/** Text appended from user configuration before project context, skills, and cwd. */
 	appendSystemPrompt?: string;
+	/** Stable session-start instructions, after project context and before skills. */
+	extensionSystemPromptContributions?: readonly ExtensionSystemPromptContribution[];
 	/** Additional XML-wrapped prompt sections keyed by tag name. */
 	sections?: Record<string, string>;
 	/** Working directory. */
@@ -37,6 +45,7 @@ export type NormalizedBuildSystemPromptOptions = BuildSystemPromptOptions & {
 	toolGuidelines: Record<string, string[]>;
 	promptGuidelines: string[];
 	appendSystemPrompt: string;
+	extensionSystemPromptContributions: readonly ExtensionSystemPromptContribution[];
 	sections: Record<string, string>;
 	contextFiles: Array<{ path: string; content: string }>;
 	skills: Skill[];
@@ -62,6 +71,7 @@ export function normalizeBuildSystemPromptOptions(input: BuildSystemPromptOption
 		),
 		promptGuidelines: [...(input.promptGuidelines ?? [])],
 		appendSystemPrompt: input.appendSystemPrompt ?? "",
+		extensionSystemPromptContributions: [...(input.extensionSystemPromptContributions ?? [])],
 		sections: { ...(input.sections ?? {}) },
 		cwd: input.cwd,
 		contextFiles: (input.contextFiles ?? []).map((file) => ({ ...file })),
@@ -127,6 +137,7 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 		toolGuidelines,
 		promptGuidelines,
 		appendSystemPrompt,
+		extensionSystemPromptContributions,
 		sections: customSections,
 		cwd,
 		contextFiles,
@@ -162,6 +173,9 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 
 	if (appendSystemPrompt) promptSections.addendum = appendSystemPrompt;
 	if (contextFiles.length > 0) promptSections.project_context = renderProjectContext(contextFiles);
+	if (extensionSystemPromptContributions.length > 0) {
+		promptSections.extension_context = extensionSystemPromptContributions.map(({ content }) => content).join("\n\n");
+	}
 	const skillFileReadTool = (["read", "bash"] as const).find((tool) => selectedTools.includes(tool));
 	if (skillFileReadTool && skills.length > 0) {
 		const skillsPrompt = formatSkillsForPrompt(skills, skillFileReadTool).trim();

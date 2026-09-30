@@ -38,6 +38,45 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("prompt structure", () => {
+		test.each([undefined, "Custom system prompt"])(
+			"places session extension text after project context and before skills with customPrompt=%s (#9432)",
+			(customPrompt) => {
+				const input = {
+					customPrompt,
+					appendSystemPrompt: "Configured addendum",
+					contextFiles: [{ path: "/tmp/AGENTS.md", content: "Project context" }],
+					extensionSystemPromptContributions: [
+						{
+							content: "Extension one",
+							sourceInfo: createSyntheticSourceInfo("<inline:one>", { source: "inline" }),
+						},
+						{
+							content: "Extension two",
+							sourceInfo: createSyntheticSourceInfo("<inline:two>", { source: "inline" }),
+						},
+					],
+					selectedTools: ["read"],
+					skills: [testSkill],
+					cwd: "/tmp",
+				};
+				const prompt = buildSystemPrompt(input);
+				const parts = [
+					"Configured addendum",
+					"Project context",
+					"Extension one\n\nExtension two",
+					"<skills>",
+					"<cwd>",
+				];
+				for (let index = 1; index < parts.length; index++) {
+					expect(prompt.indexOf(parts[index])).toBeGreaterThan(prompt.indexOf(parts[index - 1]));
+				}
+				const { extensionSystemPromptContributions: _contributions, ...without } = input;
+				expect(buildSystemPrompt({ ...without, extensionSystemPromptContributions: [] })).toBe(
+					buildSystemPrompt(without),
+				);
+				expect(prompt).not.toContain("<inline:one>");
+			},
+		);
 		test("keeps the default and custom prompt prefixes exact", () => {
 			const defaultPrompt = buildSystemPrompt({ cwd: "/tmp", selectedTools: [], contextFiles: [], skills: [] });
 			const customPrompt = buildSystemPrompt({

@@ -136,6 +136,7 @@ import {
 	buildSystemPrompt,
 	buildSystemPromptSections,
 	diffSystemPromptSections,
+	type ExtensionSystemPromptContribution,
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "./system-prompt.ts";
@@ -444,6 +445,8 @@ export class AgentSession {
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 
 	private _baseSystemPromptOptions!: NormalizedBuildSystemPromptOptions;
+	private _sessionSystemPromptContributions: readonly ExtensionSystemPromptContribution[] = [];
+	private _extensionsBound = false;
 	/** Prompt options after before_agent_start mutations for the active run. */
 	private _runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
 
@@ -1642,6 +1645,7 @@ export class AgentSession {
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
+			extensionSystemPromptContributions: this._sessionSystemPromptContributions,
 			selectedTools: validToolNames,
 			toolSnippets,
 			toolGuidelines: Object.fromEntries(this._toolPromptGuidelines),
@@ -3171,6 +3175,7 @@ export class AgentSession {
 	}
 
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
+		this._extensionsBound = true;
 		if (bindings.uiContext !== undefined) {
 			this._extensionUIContext = bindings.uiContext;
 		}
@@ -3191,9 +3196,15 @@ export class AgentSession {
 		}
 
 		this._applyExtensionBindings(this._extensionRunner);
-		await this._extensionRunner.emit(this._sessionStartEvent);
+		await this._emitSessionStartAndRebuild(this._sessionStartEvent);
 		this._extensionRunner.reportUnhandledMcpServers();
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+	}
+
+	private async _emitSessionStartAndRebuild(event: SessionStartEvent): Promise<void> {
+		const next = await this._extensionRunner.emitSessionStart(event);
+		this._sessionSystemPromptContributions = next;
+		this._rebuildSystemPrompt(this.getActiveToolNames());
 	}
 
 	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {
@@ -3581,20 +3592,16 @@ export class AgentSession {
 		this.syncQueueModesFromSettings();
 		resetApiProviders();
 		await this._resourceLoader.reload();
+		this._sessionSystemPromptContributions = [];
 		this._buildRuntime({
 			activeToolNames: this.getActiveToolNames(),
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 		});
 
-		const hasBindings =
-			this._extensionUIContext ||
-			this._extensionCommandContextActions ||
-			this._extensionShutdownHandler ||
-			this._extensionErrorListener;
-		if (hasBindings) {
+		if (this._extensionsBound) {
 			await options?.beforeSessionStart?.();
-			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
+			await this._emitSessionStartAndRebuild({ type: "session_start", reason: "reload" });
 			this._extensionRunner.reportUnhandledMcpServers();
 			await this.extendResourcesFromExtensions("reload");
 		}

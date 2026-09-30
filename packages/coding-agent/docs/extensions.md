@@ -102,6 +102,18 @@ Events cover resource discovery, sessions, agent and message lifecycle, provider
 
 `before_agent_start` exposes both the current prompt and its structured `systemPromptOptions`. Prefer changing prompt sections, selected tools, or guidelines so Pi can append a transcript delta. Returning `systemPrompt`, or setting `forceSystemPrompt`, replaces the whole prompt for that run while the transcript continues recording the structured sections. Providers receive the forced text as their leading system prompt.
 
+For instructions that should remain stable throughout a session, return `systemPromptAppend` from `session_start`:
+
+```typescript
+pi.on("session_start", async (_event, ctx) => ({
+  systemPromptAppend: await loadInstructions(ctx.cwd),
+}));
+```
+
+Pi trims and collects non-empty strings in extension and handler order. It adds them after project context and before skills and the working directory, without replacing the default prompt or another extension's text. Each handler sees the same prompt before contributions are added. Handler failures are reported and do not prevent other contributions. Slow asynchronous handlers delay session initialization, so apply your own I/O timeout when needed.
+
+Contributions are recomputed for startup, new, resume, fork, and reload. They are runtime state and are not saved in session JSONL. Tool or resource refreshes retain the current contribution; changing the model does not recompute it. `before_agent_start.systemPrompt` remains the per-run replacement mechanism. Pi keeps contribution source information in `systemPromptOptions.extensionSystemPromptContributions` for inspection, but sends only the contributed text to the model. Project extensions follow Pi's existing project trust rules; user, explicit CLI, and inline extensions keep their existing loading behavior.
+
 `message_end` can replace a finalized message while preserving its role. `tool_call` can mutate input or block execution. `tool_result` handlers compose, with each handler seeing prior changes.
 
 <a id="provider_stream_event"></a>

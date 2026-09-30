@@ -527,4 +527,39 @@ describe("AgentSession model and extension characterization", () => {
 
 		expect(lifecycleEvents).toEqual(["start:startup", "shutdown:reload", "start:reload"]);
 	});
+
+	it("collects stable session_start contributions and replaces them on reload (#9432)", async () => {
+		const seen: string[] = [];
+		const failures: string[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_start", (event, ctx) => {
+						seen.push(`${event.reason}:${ctx.getSystemPrompt().includes("<extension_context>")}`);
+						return { systemPromptAppend: `  first ${event.reason}  ` };
+					});
+					pi.on("session_start", () => ({ systemPromptAppend: " \n " }));
+				},
+				(pi) => {
+					pi.on("session_start", (_event, ctx) => {
+						seen.push(`second:${ctx.getSystemPrompt().includes("<extension_context>")}`);
+						throw new Error("optional failure");
+					});
+					pi.on("session_start", () => ({ systemPromptAppend: "second" }));
+				},
+			],
+		});
+		harnesses.push(harness);
+		await harness.session.bindExtensions({ onError: (error) => failures.push(error.error) });
+		expect(harness.session.systemPrompt).toContain(
+			"<extension_context>\nfirst startup\n\nsecond\n</extension_context>",
+		);
+		expect(failures).toEqual(["optional failure"]);
+		expect(seen).toEqual(["startup:false", "second:false"]);
+		harness.session.setActiveToolsByName(["read"]);
+		expect(harness.session.systemPrompt).toContain("first startup\n\nsecond");
+		await harness.session.reload();
+		expect(harness.session.systemPrompt).toContain("first reload\n\nsecond");
+		expect(harness.session.systemPrompt).not.toContain("first startup");
+	});
 });
