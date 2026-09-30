@@ -25,6 +25,13 @@ describe("SettingsManager", () => {
 		}
 	});
 
+	// Regression test for #10144: existing explicit preferences survive the default change.
+	it("defaults steering to all but preserves an explicit one-at-a-time setting", () => {
+		expect(SettingsManager.inMemory().getSteeringMode()).toBe("all");
+		expect(SettingsManager.inMemory({ steeringMode: "one-at-a-time" }).getSteeringMode()).toBe("one-at-a-time");
+		expect(SettingsManager.inMemory().getFollowUpMode()).toBe("one-at-a-time");
+	});
+
 	describe("preserves externally added settings", () => {
 		it("should preserve enabledModels when changing thinking level", async () => {
 			// Create initial settings file

@@ -207,6 +207,7 @@ describe("AgentSession queue characterization", () => {
 		const waiting = await createWaitingHarness();
 		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
 		harnesses.push(harness);
+		harness.session.setSteeringMode("one-at-a-time");
 
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
@@ -251,11 +252,11 @@ describe("AgentSession queue characterization", () => {
 		]);
 	});
 
-	it("delivers all steering messages in one batch in all mode", async () => {
+	// Regression test for #10144: both queued corrections reach the next model turn by default.
+	it("delivers all steering messages in one batch by default", async () => {
 		const waiting = await createWaitingHarness();
 		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
 		harnesses.push(harness);
-		harness.session.setSteeringMode("all");
 		let batchedUserMessages: string[] = [];
 
 		harness.setResponses([

@@ -191,6 +191,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	const agent = new Agent({
 		getApiKey: () => (withConfiguredAuth ? "faux-key" : undefined),
 		streamFn: streamSimple,
+		steeringMode: settingsManager.getSteeringMode(),
+		followUpMode: settingsManager.getFollowUpMode(),
 		initialState: {
 			model,
 			systemPrompt: "",
