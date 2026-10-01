@@ -22,6 +22,8 @@ import { EventEmitter } from "events";
 const ESC = "\x1b";
 const DEFAULT_SEQUENCE_TIMEOUT_MS = 50;
 const DEFAULT_ESCAPE_TIMEOUT_MS = 10;
+const COLOR_RESPONSE_TIMEOUT_MS = 500;
+const MAX_COLOR_RESPONSE_LENGTH = 256;
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 
@@ -385,7 +387,16 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 
 		if (this.buffer.length > 0) {
-			const timeoutMs = this.buffer === ESC ? this.escapeTimeoutMs : this.timeoutMs;
+			// Give fragmented color replies more time than keys, without indefinitely
+			// retaining a malformed control string or an unbounded payload.
+			const isColorResponse =
+				this.buffer.length <= MAX_COLOR_RESPONSE_LENGTH && /^\x1b\](?:4|1[01])(?:;|$)/.test(this.buffer);
+			const timeoutMs =
+				this.buffer === ESC
+					? this.escapeTimeoutMs
+					: isColorResponse
+						? Math.max(this.timeoutMs, COLOR_RESPONSE_TIMEOUT_MS)
+						: this.timeoutMs;
 			this.timeout = setTimeout(() => {
 				const flushed = this.flush();
 

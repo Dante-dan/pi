@@ -1122,7 +1122,9 @@ export abstract class TuiBase extends Container implements TUI {
 	private consumeTerminalColorResponse(data: string): boolean {
 		const query = this.pendingTerminalColorQueries[0];
 		if (!query) {
-			return false;
+			// Multiplexers can answer DA1 before forwarding the terminal's color replies.
+			// These protocol replies must not become editor input after the query ends.
+			return DEVICE_ATTRIBUTES_RESPONSE_PATTERN.test(data) || parseOscColorResponse(data) !== undefined;
 		}
 		if (DEVICE_ATTRIBUTES_RESPONSE_PATTERN.test(data)) {
 			this.pendingTerminalColorQueries.shift();

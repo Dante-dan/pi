@@ -189,9 +189,11 @@ describe("TUI.queryTerminalColors", () => {
 			assert.deepStrictEqual(late, [{ foreground: undefined, background: WHITE, palette: undefined }]);
 			assert.deepStrictEqual(component.inputs, []);
 
-			// With no query pending, color replies are ordinary input again.
+			// #10250 / #10256: delayed protocol replies must not reach the editor after DA1.
 			terminal.sendInput("\x1b]11;#ffffff\x07");
-			assert.deepStrictEqual(component.inputs, ["\x1b]11;#ffffff\x07"]);
+			terminal.sendInput(DA1);
+			terminal.sendInput("x");
+			assert.deepStrictEqual(component.inputs, ["x"]);
 		} finally {
 			tui.stop();
 		}

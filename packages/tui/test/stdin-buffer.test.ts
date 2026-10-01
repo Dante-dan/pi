@@ -125,6 +125,38 @@ describe("StdinBuffer", () => {
 			assert.deepStrictEqual(emittedSequences, ["\x1b[<35;20;5m"]);
 		});
 
+		// #10250 / #10256: fragmented color replies must not become text or Ctrl+G.
+		it("keeps delayed OSC color replies together through the keyboard timeout", async () => {
+			for (const prefix of ["\x1b]10;", "\x1b]11;", "\x1b]4;15;"]) {
+				processInput(prefix);
+				await wait(20);
+				assert.deepStrictEqual(emittedSequences, []);
+				processInput("rgb:0000/ffff/");
+				await wait(20);
+				assert.deepStrictEqual(emittedSequences, []);
+				processInput("0000\x07");
+				assert.deepStrictEqual(emittedSequences, [`${prefix}rgb:0000/ffff/0000\x07`]);
+				emittedSequences = [];
+			}
+		});
+
+		it("bounds the wait for a color reply that never terminates", async () => {
+			processInput("\x1b]11;rgb:0000/");
+			await wait(550);
+			assert.deepStrictEqual(emittedSequences, ["\x1b]11;rgb:0000/"]);
+			processInput("x");
+			assert.strictEqual(emittedSequences.at(-1), "x");
+			assert.strictEqual(buffer.getBuffer(), "");
+		});
+
+		it("uses the keyboard timeout for an oversized color reply", async () => {
+			const oversized = `\x1b]11;${"0".repeat(256)}`;
+			processInput(oversized);
+			await wait(20);
+			assert.deepStrictEqual(emittedSequences, [oversized]);
+			assert.strictEqual(buffer.getBuffer(), "");
+		});
+
 		it("should flush incomplete sequence after timeout", async () => {
 			processInput("\x1b[<35");
 			assert.deepStrictEqual(emittedSequences, []);
