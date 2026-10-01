@@ -24,7 +24,10 @@ describe("request-size image recovery", () => {
 	});
 
 	it("retains the newest screenshot and preserves the original session images", async () => {
-		harness = await createHarness({ models: [{ id: "images", input: ["text", "image"] }] });
+		harness = await createHarness({
+			models: [{ id: "images", input: ["text", "image"] }],
+			settings: { images: { autoResize: false } },
+		});
 		const screenshot: ImageContent = { type: "image", data: "A".repeat(4 * 1024 * 1024), mimeType: "image/png" };
 		const original: AgentMessage = {
 			role: "toolResult",
@@ -56,17 +59,16 @@ describe("request-size image recovery", () => {
 		expect(observed).toEqual([8 * 1024 * 1024, 4 * 1024 * 1024]);
 		expect(harness.session.getLastAssistantText()).toBe("recovered");
 		const retained = harness.session.messages.find((message) => message.role === "toolResult");
-		expect(retained?.content).toEqual([
-			{ type: "text", text: "[Image omitted after the provider rejected the request size.]" },
-			{ type: "text", text: "Keep this caption" },
-			original.content[2],
-		]);
+		expect(retained?.content).toEqual(original.content);
 		expect(imageBytes(harness.sessionManager.buildSessionContext().messages)).toBe(8 * 1024 * 1024);
 		expect(harness.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
 	});
 
 	it("reduces images repeatedly for a smaller unknown limit, including the last image", async () => {
-		harness = await createHarness({ models: [{ id: "images", input: ["text", "image"] }] });
+		harness = await createHarness({
+			models: [{ id: "images", input: ["text", "image"] }],
+			settings: { images: { autoResize: false } },
+		});
 		const observed: number[] = [];
 		const respond = (context: TranscriptContext) => {
 			const bytes = imageBytes(context.messages);
@@ -92,7 +94,10 @@ describe("request-size image recovery", () => {
 	});
 
 	it("stops when a persistent size error has no further image bytes to remove", async () => {
-		harness = await createHarness({ models: [{ id: "images", input: ["text", "image"] }] });
+		harness = await createHarness({
+			models: [{ id: "images", input: ["text", "image"] }],
+			settings: { images: { autoResize: false } },
+		});
 		const error = fauxAssistantMessage("", { stopReason: "error", errorMessage: "request_too_large" });
 		harness.setResponses([error, error]);
 		await harness.session.prompt("Continue", {

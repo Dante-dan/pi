@@ -107,7 +107,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
-import { isRequestSizeError, reduceOverflowImages } from "./overflow-images.ts";
+import { isRequestSizeError, limitOverflowImages } from "./overflow-images.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import { exportSessionToJsonl } from "./session-export.ts";
@@ -354,7 +354,10 @@ export class AgentSession {
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
-	private _lastOverflowImageBytes = Number.POSITIVE_INFINITY;
+	private _overflowImageBudget: number | undefined;
+	private _overflowRetryMessages: AgentMessage[] | undefined;
+	private _lastRequestImageBytes = 0;
+	private _lastRejectedImageBytes = Number.POSITIVE_INFINITY;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -625,9 +628,16 @@ export class AgentSession {
 				},
 				signal,
 			);
+			const preparedContext = previous?.context ?? canonicalContext;
+			if (this._overflowImageBudget === undefined) {
+				this._overflowRetryMessages = preparedContext.messages;
+			}
+			const requestMessages = this._overflowRetryMessages ?? preparedContext.messages;
+			const limited = limitOverflowImages(requestMessages, this._overflowImageBudget);
+			this._lastRequestImageBytes = limited.imageBytes;
 			return {
 				...previous,
-				context: previous?.context ?? canonicalContext,
+				context: { ...preparedContext, messages: limited.messages },
 				model: previous?.model ?? this.agent.state.model,
 				thinkingLevel: previous?.thinkingLevel ?? this.agent.state.thinkingLevel,
 			};
@@ -898,7 +908,9 @@ export class AgentSession {
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
 			this._overflowRecoveryAttempted = false;
-			this._lastOverflowImageBytes = Number.POSITIVE_INFINITY;
+			this._overflowImageBudget = undefined;
+			this._overflowRetryMessages = undefined;
+			this._lastRejectedImageBytes = Number.POSITIVE_INFINITY;
 			const messageText = contentText(event.message.content, "");
 			if (messageText) {
 				// Check steering queue first
@@ -950,7 +962,10 @@ export class AgentSession {
 				this._lastAssistantMessage = assistantMsg;
 				if (assistantMsg.stopReason !== "error" && assistantMsg.stopReason !== "length") {
 					this._overflowRecoveryAttempted = false;
-					this._lastOverflowImageBytes = Number.POSITIVE_INFINITY;
+					this._overflowImageBudget = undefined;
+					this._overflowRetryMessages = undefined;
+					this._lastRequestImageBytes = 0;
+					this._lastRejectedImageBytes = Number.POSITIVE_INFINITY;
 				}
 
 				// Reset retry counter immediately on successful assistant response
@@ -2634,18 +2649,17 @@ export class AgentSession {
 		// images themselves before retrying, retaining the newest images and all text.
 		// Guard against extensions or compaction restoring an unchanged image payload.
 		if (sameModel && assistantMessage.stopReason === "error" && isRequestSizeError(assistantMessage.errorMessage)) {
-			const messages = this.agent.state.messages;
-			const recovery = reduceOverflowImages(messages);
-			if (recovery.imageBytes > 0 && recovery.imageBytes < this._lastOverflowImageBytes) {
-				this._lastOverflowImageBytes = recovery.imageBytes;
-				const lastMessage = recovery.messages[recovery.messages.length - 1];
-				this.agent.state.messages =
-					lastMessage?.role === "assistant" ? recovery.messages.slice(0, -1) : recovery.messages;
+			if (this._lastRequestImageBytes > 0 && this._lastRequestImageBytes < this._lastRejectedImageBytes) {
+				this._lastRejectedImageBytes = this._lastRequestImageBytes;
+				this._overflowImageBudget = Math.floor(this._lastRequestImageBytes / 2);
+				// Tool results are part of the rejected request and must remain available
+				// for the smaller retry. Only omit the failed assistant attempt.
+				this._omitRecoveryAttempt(assistantMessage);
 				return true;
 			}
 			// Do not rebuild the original image payload through text compaction after
 			// image recovery has exhausted its progress. Keep the final provider error.
-			if (this._lastOverflowImageBytes !== Number.POSITIVE_INFINITY) return false;
+			if (this._lastRejectedImageBytes !== Number.POSITIVE_INFINITY) return false;
 		}
 
 		// Automatic cases 1 and 2: context overflow.

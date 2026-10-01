@@ -7,12 +7,11 @@ export function isRequestSizeError(errorMessage: string | undefined): boolean {
 	);
 }
 
-/**
- * Halve retained image bytes, oldest first, without modifying the session transcript.
- * No provider limit is assumed: a subsequent size rejection can reduce the remaining
- * images again. Even a single image is eventually replaced, so retries make progress.
- */
-export function reduceOverflowImages(messages: AgentMessage[]): {
+/** Limit retained image bytes, oldest first, without modifying the session transcript. */
+export function limitOverflowImages(
+	messages: AgentMessage[],
+	budget = Number.POSITIVE_INFINITY,
+): {
 	messages: AgentMessage[];
 	imageBytes: number;
 } {
@@ -26,7 +25,6 @@ export function reduceOverflowImages(messages: AgentMessage[]): {
 	}
 	if (imageBytes === 0) return { messages, imageBytes };
 
-	const budget = Math.floor(imageBytes / 2);
 	let remainingBytes = imageBytes;
 	const reduced = messages.map((message): AgentMessage => {
 		if (remainingBytes <= budget) return message;
@@ -41,5 +39,5 @@ export function reduceOverflowImages(messages: AgentMessage[]): {
 		});
 		return changed ? { ...message, content } : message;
 	});
-	return { messages: reduced, imageBytes };
+	return { messages: reduced, imageBytes: remainingBytes };
 }
