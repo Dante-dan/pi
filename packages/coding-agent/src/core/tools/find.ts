@@ -201,11 +201,16 @@ export function createFindToolDefinition(
 						// fd --glob matches against the basename unless --full-path is set; in --full-path
 						// mode it matches against the absolute candidate path, so a path-containing
 						// pattern like 'src/**/*.spec.ts' needs a leading '**/' to match anything.
-						let effectivePattern = pattern;
-						if (pattern.includes("/")) {
+						// Windows callers may supply native separators; normalize before detecting path globs.
+						let effectivePattern = process.platform === "win32" ? pattern.replaceAll("\\", "/") : pattern;
+						if (effectivePattern.includes("/")) {
 							args.push("--full-path");
-							if (!pattern.startsWith("/") && !pattern.startsWith("**/") && pattern !== "**") {
-								effectivePattern = `**/${pattern}`;
+							if (
+								!effectivePattern.startsWith("/") &&
+								!effectivePattern.startsWith("**/") &&
+								effectivePattern !== "**"
+							) {
+								effectivePattern = `**/${effectivePattern}`;
 							}
 							// fd matches full paths using native separators on Windows.
 							if (process.platform === "win32")

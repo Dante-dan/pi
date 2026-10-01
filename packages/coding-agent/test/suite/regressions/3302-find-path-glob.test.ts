@@ -69,4 +69,10 @@ describe("issue #3302 find returns no results for path-based glob patterns", () 
 		const files = await runFind("src/**/*.spec.ts");
 		expect(files).toEqual(["src/foo/bar/example.spec.ts"]);
 	});
+
+	// Issue #6817: native Windows separators must select fd's full-path matching mode.
+	it.skipIf(process.platform !== "win32")("src\\foo\\**\\*.spec.ts matches nested spec file", async () => {
+		const files = await runFind(String.raw`src\foo\**\*.spec.ts`);
+		expect(files).toEqual(["src/foo/bar/example.spec.ts"]);
+	});
 });
