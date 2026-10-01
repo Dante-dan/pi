@@ -71,7 +71,8 @@ describe("OpenAI ChatGPT OAuth", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("registers a user-owned client and stores its issued ID and granted scopes", async () => {
+	// #10300: extensions need the original ID token after login, not just access/refresh tokens.
+	it("registers a user-owned client and stores its issued ID, identity token, and granted scopes", async () => {
 		let authorizeUrl: URL | undefined;
 		let exchangeBody: URLSearchParams | undefined;
 		stubTokenEndpoint(tokenResponse(), (body) => {
@@ -103,6 +104,7 @@ describe("OpenAI ChatGPT OAuth", () => {
 			type: "oauth",
 			access: "access-token",
 			refresh: "refresh-token",
+			idToken: "id-token",
 			clientId: "oaiapp_issued",
 			scopes: REQUIRED_SCOPE.split(" "),
 		});
@@ -151,14 +153,21 @@ describe("OpenAI ChatGPT OAuth", () => {
 		);
 	});
 
-	it("refreshes with the credential's issued client ID and stores replacement scopes", async () => {
+	// #10300: refresh must retain a replacement identity token too.
+	it("refreshes with the credential's issued client ID and stores replacement identity and scopes", async () => {
 		let refreshBody: URLSearchParams | undefined;
-		stubTokenEndpoint({ ...tokenResponse(), access_token: "new-access", refresh_token: "new-refresh" }, (body) => {
-			refreshBody = body;
-		});
+		stubTokenEndpoint(
+			{ ...tokenResponse(), access_token: "new-access", refresh_token: "new-refresh", id_token: "new-id" },
+			(body) => {
+				refreshBody = body;
+			},
+		);
 
 		const before = Date.now();
-		const credential = await openaiChatGPTOAuth.refresh(connectedCredential(), neverAbortedSignal);
+		const credential = await openaiChatGPTOAuth.refresh(
+			{ ...connectedCredential(), idToken: "old-id" },
+			neverAbortedSignal,
+		);
 
 		// expires_in is 3600 seconds; the credential expires 3 minutes early so it is refreshed in time.
 		expect(credential.expires).toBeGreaterThanOrEqual(before + (3600 - 180) * 1000);
@@ -172,8 +181,29 @@ describe("OpenAI ChatGPT OAuth", () => {
 		expect(credential).toMatchObject({
 			access: "new-access",
 			refresh: "new-refresh",
+			idToken: "new-id",
 			clientId: "oaiapp_existing",
 			scopes: REQUIRED_SCOPE.split(" "),
 		});
+		expect(await openaiChatGPTOAuth.toAuth(credential)).toEqual({ apiKey: "new-access" });
+	});
+
+	// #10300: OAuth refresh may omit an ID token; retain stored identity metadata in that case.
+	it("preserves the ID token when a refresh response does not issue one", async () => {
+		const { id_token: _idToken, ...response } = tokenResponse();
+		stubTokenEndpoint(response);
+		const credential = await openaiChatGPTOAuth.refresh(
+			{ ...connectedCredential(), idToken: "existing-id" },
+			neverAbortedSignal,
+		);
+		expect(credential.idToken).toBe("existing-id");
+	});
+
+	// #10300: credentials saved before identity persistence can still refresh normally.
+	it("refreshes legacy credentials without adding an absent ID token", async () => {
+		const { id_token: _idToken, ...response } = tokenResponse();
+		stubTokenEndpoint(response);
+		const credential = await openaiChatGPTOAuth.refresh(connectedCredential(), neverAbortedSignal);
+		expect(credential).not.toHaveProperty("idToken");
 	});
 });

@@ -159,7 +159,11 @@ function requireTokenString(value: unknown, field: "access_token" | "refresh_tok
 	return value;
 }
 
-function credentialFromTokenResponse(token: TokenResponse, clientId: string): OAuthCredential {
+function credentialFromTokenResponse(
+	token: TokenResponse,
+	clientId: string,
+	previousIdToken?: unknown,
+): OAuthCredential {
 	const access = requireTokenString(token.access_token, "access_token");
 	const refresh = requireTokenString(token.refresh_token, "refresh_token");
 	const scope = requireTokenString(token.scope, "scope");
@@ -170,6 +174,8 @@ function credentialFromTokenResponse(token: TokenResponse, clientId: string): OA
 	if (!scopes.includes(DIRECT_TOKEN_SCOPE)) {
 		throw new Error(`OpenAI OAuth grant did not include ${DIRECT_TOKEN_SCOPE}`);
 	}
+	// Preserve account metadata for extensions, without using it for request authentication.
+	const idToken = token.id_token ?? previousIdToken;
 	return {
 		type: "oauth",
 		access,
@@ -177,6 +183,7 @@ function credentialFromTokenResponse(token: TokenResponse, clientId: string): OA
 		expires: Date.now() + token.expires_in * 1000 - EXPIRY_MARGIN_MS,
 		clientId,
 		scopes,
+		...(typeof idToken === "string" && idToken.trim().length > 0 ? { idToken } : {}),
 	};
 }
 
@@ -197,7 +204,7 @@ async function exchangeAuthorizationCode(
 		}),
 		signal,
 	);
-	// Pi does not use the ID token to identify the user or read profile data.
+	// Pi does not use the ID token for request authentication.
 	// Keep the presence check as part of the token-response contract.
 	if (typeof token.id_token !== "string" || token.id_token.trim().length === 0) {
 		throw new Error("OpenAI OAuth token response did not contain an ID token");
@@ -219,7 +226,7 @@ async function refreshAccessToken(credential: OAuthCredential, signal: AbortSign
 		}),
 		signal,
 	);
-	return credentialFromTokenResponse(token, clientId);
+	return credentialFromTokenResponse(token, clientId, credential.idToken);
 }
 
 /** OpenAI identifies each installation ("agent host") by a stable URI such as `urn:uuid:<uuid>`. */
