@@ -767,6 +767,46 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.session.getLastAssistantText()).toBe("continued");
 	});
 
+	// Regression test for #10289: cancelling pre-prompt compaction must not start the pending prompt.
+	it.each(["abort", "abortCompaction"] as const)(
+		"handles %s during pre-prompt compaction without losing session cancellation",
+		async (operation) => {
+			const { harness, compactionStarted } = await createAbortableCompactionHarness();
+			harnesses.push(harness);
+			harness.session.agent.state.model = { ...harness.getModel(), contextWindow: 1000 };
+			harness.settingsManager.applyOverrides({ compaction: { enabled: true, reserveTokens: 950 } });
+			harness.setResponses([fauxAssistantMessage("continued")]);
+			const preflightResult = vi.fn();
+
+			const prompt = harness.session.prompt("cancelled prompt", { preflightResult });
+			const promptExpectation =
+				operation === "abort"
+					? expect(prompt).rejects.toThrow("Prompt aborted")
+					: expect(prompt).resolves.toBeUndefined();
+			await compactionStarted;
+			harness.session.setAutoCompactionEnabled(false);
+			await harness.session[operation]();
+			await promptExpectation;
+
+			expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({ aborted: true });
+			expect(harness.session.isIdle).toBe(true);
+			if (operation === "abort") {
+				expect(harness.faux.state.callCount).toBe(0);
+				expect(harness.eventsOfType("agent_start")).toHaveLength(0);
+				expect(getUserTexts(harness)).not.toContain("cancelled prompt");
+				expect(preflightResult).not.toHaveBeenCalled();
+
+				await harness.session.prompt("next prompt");
+				expect(harness.faux.state.callCount).toBe(1);
+				expect(getUserTexts(harness)).toContain("next prompt");
+			} else {
+				expect(harness.faux.state.callCount).toBe(1);
+				expect(getUserTexts(harness)).toContain("cancelled prompt");
+				expect(preflightResult).toHaveBeenCalledWith("started");
+			}
+		},
+	);
+
 	it("resumes after threshold compaction when only agent-level queued messages exist", async () => {
 		vi.useFakeTimers();
 		const harness = await createHarness({

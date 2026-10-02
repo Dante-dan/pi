@@ -371,6 +371,7 @@ export class AgentSession {
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
 	private _agentRunAbortRequested = false;
+	private _abortGeneration = 0;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
 
@@ -2004,10 +2005,14 @@ export class AgentSession {
 
 		// Check if we need to compact before sending (catches aborted responses).
 		// The user's new prompt is sent below, so do not call agent.continue() here.
+		// A session abort during compaction must also cancel this pending prompt,
+		// even though the agent run has not started yet.
+		const abortGeneration = this._abortGeneration;
 		const lastAssistant = this._findLastAssistantMessage();
 		if (lastAssistant) {
 			await this._checkCompaction(lastAssistant, false);
 		}
+		if (abortGeneration !== this._abortGeneration) throw new Error("Prompt aborted");
 
 		// Emit before_agent_start before normalizing images so extension-driven model
 		// selection determines the resize profile used for the request and history.
@@ -2385,6 +2390,7 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
+		this._abortGeneration++;
 		if (this._isAgentRunActive) {
 			this._agentRunAbortRequested = true;
 		}
