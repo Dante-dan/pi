@@ -1244,11 +1244,18 @@ function buildAdditionalModelRequestFields(
 	if (isAnthropicClaudeModel(model)) {
 		// GovCloud Bedrock currently rejects the Claude thinking.display field.
 		// Omit it there until the GovCloud Converse schema catches up.
-		const display = isGovCloudBedrockTarget(model, options) ? undefined : (options.thinkingDisplay ?? "summarized");
+		const isGovCloud = isGovCloudBedrockTarget(model, options);
+		const display = isGovCloud ? undefined : (options.thinkingDisplay ?? "summarized");
 		const result: Record<string, any> = supportsAdaptiveThinking(model.id, model.name)
 			? {
-					thinking: { type: "adaptive", ...(display !== undefined ? { display } : {}) },
+					thinking: {
+						type: "adaptive",
+						...(display !== undefined ? { display } : {}),
+						// Drop signed blocks bound to an earlier system prompt or tool list.
+						...(!isGovCloud ? { block_binding: { prefix_mismatch_behavior: "drop_block" } } : {}),
+					},
 					output_config: { effort: mapThinkingLevelToEffort(model, options.reasoning) },
+					...(!isGovCloud ? { anthropic_beta: ["thinking-binding-controls-2026-08-01"] } : {}),
 				}
 			: (() => {
 					const defaultBudgets: Record<ThinkingLevel, number> = {

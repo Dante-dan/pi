@@ -6,7 +6,12 @@ import { hasBedrockCredentials } from "./bedrock-utils.ts";
 
 interface BedrockThinkingPayload {
 	additionalModelRequestFields?: {
-		thinking?: { type: string; budget_tokens?: number; display?: string };
+		thinking?: {
+			type: string;
+			budget_tokens?: number;
+			display?: string;
+			block_binding?: { prefix_mismatch_behavior: string };
+		};
 		output_config?: { effort?: string };
 		anthropic_beta?: string[];
 	};
@@ -53,6 +58,29 @@ async function capturePayload(
 }
 
 describe("Bedrock thinking payload", () => {
+	// Regression for #10324: Bedrock must request dropping stale signed thinking blocks.
+	it("enables binding controls for the reported Claude Opus 5.5 replay", async () => {
+		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-5");
+		const model: Model<"bedrock-converse-stream"> = {
+			...baseModel,
+			id: "global.anthropic.claude-opus-5-5",
+			name: "Claude Opus 5.5 (Global)",
+		};
+
+		const payload = await capturePayload(model, { thinkingDisplay: "omitted" });
+
+		expect(payload.additionalModelRequestFields?.thinking).toEqual({
+			type: "adaptive",
+			display: "omitted",
+			block_binding: { prefix_mismatch_behavior: "drop_block" },
+		});
+		expect(payload.additionalModelRequestFields?.anthropic_beta).toEqual(["thinking-binding-controls-2026-08-01"]);
+
+		const govPayload = await capturePayload({ ...model, id: "us-gov.anthropic.claude-opus-5-5" });
+		expect(govPayload.additionalModelRequestFields?.thinking).toEqual({ type: "adaptive" });
+		expect(govPayload.additionalModelRequestFields?.anthropic_beta).toBeUndefined();
+	});
+
 	it("uses adaptive thinking for Claude Opus 4.8 when reasoning is enabled", async () => {
 		const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-opus-4-6-v1");
 		const model: Model<"bedrock-converse-stream"> = {
@@ -63,9 +91,13 @@ describe("Bedrock thinking payload", () => {
 
 		const payload = await capturePayload(model);
 
-		expect(payload.additionalModelRequestFields?.thinking).toEqual({ type: "adaptive", display: "summarized" });
+		expect(payload.additionalModelRequestFields?.thinking).toEqual({
+			type: "adaptive",
+			display: "summarized",
+			block_binding: { prefix_mismatch_behavior: "drop_block" },
+		});
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "high" });
-		expect(payload.additionalModelRequestFields?.anthropic_beta).toBeUndefined();
+		expect(payload.additionalModelRequestFields?.anthropic_beta).toEqual(["thinking-binding-controls-2026-08-01"]);
 	});
 
 	it("maps xhigh reasoning to effort=xhigh for Claude Opus 4.8", async () => {
@@ -78,9 +110,13 @@ describe("Bedrock thinking payload", () => {
 
 		const payload = await capturePayload(model, { reasoning: "xhigh" });
 
-		expect(payload.additionalModelRequestFields?.thinking).toEqual({ type: "adaptive", display: "summarized" });
+		expect(payload.additionalModelRequestFields?.thinking).toEqual({
+			type: "adaptive",
+			display: "summarized",
+			block_binding: { prefix_mismatch_behavior: "drop_block" },
+		});
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "xhigh" });
-		expect(payload.additionalModelRequestFields?.anthropic_beta).toBeUndefined();
+		expect(payload.additionalModelRequestFields?.anthropic_beta).toEqual(["thinking-binding-controls-2026-08-01"]);
 	});
 
 	it("uses adaptive thinking for Claude Fable 5 when reasoning is enabled", async () => {
@@ -88,9 +124,13 @@ describe("Bedrock thinking payload", () => {
 
 		const payload = await capturePayload(model);
 
-		expect(payload.additionalModelRequestFields?.thinking).toEqual({ type: "adaptive", display: "summarized" });
+		expect(payload.additionalModelRequestFields?.thinking).toEqual({
+			type: "adaptive",
+			display: "summarized",
+			block_binding: { prefix_mismatch_behavior: "drop_block" },
+		});
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "high" });
-		expect(payload.additionalModelRequestFields?.anthropic_beta).toBeUndefined();
+		expect(payload.additionalModelRequestFields?.anthropic_beta).toEqual(["thinking-binding-controls-2026-08-01"]);
 	});
 
 	it("uses adaptive thinking for Claude Sonnet 5 when reasoning is enabled", async () => {
@@ -98,9 +138,13 @@ describe("Bedrock thinking payload", () => {
 
 		const payload = await capturePayload(model);
 
-		expect(payload.additionalModelRequestFields?.thinking).toEqual({ type: "adaptive", display: "summarized" });
+		expect(payload.additionalModelRequestFields?.thinking).toEqual({
+			type: "adaptive",
+			display: "summarized",
+			block_binding: { prefix_mismatch_behavior: "drop_block" },
+		});
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "high" });
-		expect(payload.additionalModelRequestFields?.anthropic_beta).toBeUndefined();
+		expect(payload.additionalModelRequestFields?.anthropic_beta).toEqual(["thinking-binding-controls-2026-08-01"]);
 	});
 
 	it("uses adaptive thinking for Claude Opus 5 when reasoning is enabled", async () => {
@@ -108,9 +152,13 @@ describe("Bedrock thinking payload", () => {
 
 		const payload = await capturePayload(model);
 
-		expect(payload.additionalModelRequestFields?.thinking).toEqual({ type: "adaptive", display: "summarized" });
+		expect(payload.additionalModelRequestFields?.thinking).toEqual({
+			type: "adaptive",
+			display: "summarized",
+			block_binding: { prefix_mismatch_behavior: "drop_block" },
+		});
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "high" });
-		expect(payload.additionalModelRequestFields?.anthropic_beta).toBeUndefined();
+		expect(payload.additionalModelRequestFields?.anthropic_beta).toEqual(["thinking-binding-controls-2026-08-01"]);
 	});
 
 	it("maps xhigh reasoning to effort=xhigh for Claude Opus 5", async () => {
@@ -118,9 +166,13 @@ describe("Bedrock thinking payload", () => {
 
 		const payload = await capturePayload(model, { reasoning: "xhigh" });
 
-		expect(payload.additionalModelRequestFields?.thinking).toEqual({ type: "adaptive", display: "summarized" });
+		expect(payload.additionalModelRequestFields?.thinking).toEqual({
+			type: "adaptive",
+			display: "summarized",
+			block_binding: { prefix_mismatch_behavior: "drop_block" },
+		});
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "xhigh" });
-		expect(payload.additionalModelRequestFields?.anthropic_beta).toBeUndefined();
+		expect(payload.additionalModelRequestFields?.anthropic_beta).toEqual(["thinking-binding-controls-2026-08-01"]);
 	});
 
 	it("maps xhigh reasoning to effort=xhigh for Claude Fable 5", async () => {
@@ -128,7 +180,11 @@ describe("Bedrock thinking payload", () => {
 
 		const payload = await capturePayload(model, { reasoning: "xhigh" });
 
-		expect(payload.additionalModelRequestFields?.thinking).toEqual({ type: "adaptive", display: "summarized" });
+		expect(payload.additionalModelRequestFields?.thinking).toEqual({
+			type: "adaptive",
+			display: "summarized",
+			block_binding: { prefix_mismatch_behavior: "drop_block" },
+		});
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "xhigh" });
 	});
 
@@ -206,7 +262,11 @@ describe("Application inference profile support", () => {
 
 		const payload = await capturePayload(model);
 
-		expect(payload.additionalModelRequestFields?.thinking).toEqual({ type: "adaptive", display: "summarized" });
+		expect(payload.additionalModelRequestFields?.thinking).toEqual({
+			type: "adaptive",
+			display: "summarized",
+			block_binding: { prefix_mismatch_behavior: "drop_block" },
+		});
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "high" });
 	});
 
