@@ -458,6 +458,8 @@ export class AgentSession {
 	private _baseSystemPromptOptions!: NormalizedBuildSystemPromptOptions;
 	/** Prompt options after before_agent_start mutations for the active run. */
 	private _runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
+	/** Last prompt's options for extension messages that continue without a new user prompt. */
+	private _continuationSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -1772,7 +1774,8 @@ export class AgentSession {
 	// Prompting
 	// =========================================================================
 
-	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[], continuePrompt = false): Promise<void> {
+		if (continuePrompt) this._runSystemPromptOptions = this._continuationSystemPromptOptions;
 		this._agentRunAbortRequested = false;
 		// Compaction before the prompt may have scheduled a retry; the new prompt replaces it.
 		this._failedResponse = undefined;
@@ -1796,6 +1799,7 @@ export class AgentSession {
 		} finally {
 			if (this._agentRunAbortRequested) this._finishCancelledRetry();
 			this._failedResponse = undefined;
+			this._continuationSystemPromptOptions = this._runSystemPromptOptions;
 			this._runSystemPromptOptions = undefined;
 			this._flushPendingBashMessages();
 			this._flushPendingCustomMessages();
@@ -2266,10 +2270,10 @@ export class AgentSession {
 			}
 		} else if (options?.triggerTurn) {
 			if (this._isEmittingAgentSettled) {
-				this._deferredSettledActions.push(async () => await this._runAgentPrompt(appMessage));
+				this._deferredSettledActions.push(async () => await this._runAgentPrompt(appMessage, true));
 				return;
 			}
-			await this._runAgentPrompt(appMessage);
+			await this._runAgentPrompt(appMessage, true);
 		} else if (this.isStreaming) {
 			// Appending now would put the message between an assistant tool call and its
 			// result, which providers that validate message order reject on replay. Defer
@@ -3610,6 +3614,7 @@ export class AgentSession {
 	}
 
 	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
+		this._continuationSystemPromptOptions = undefined;
 		const oldRunner = this._extensionRunner;
 		const previousFlagValues = oldRunner.getFlagValues();
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
@@ -4085,6 +4090,7 @@ export class AgentSession {
 			}
 
 			// Update finalized context from the canonical session projection.
+			this._continuationSystemPromptOptions = undefined;
 			this._refreshFinalizedContext();
 			this._restoreToolsFromTranscript();
 
