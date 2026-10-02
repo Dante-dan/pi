@@ -7,6 +7,25 @@ const defaults = { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 
 
 // Regression coverage for #8133.
 describe("compaction model overrides", () => {
+	// Regression coverage for #10162.
+	it("defaults image-error recovery off and persists its toggle independently", async () => {
+		const storage = new InMemorySettingsStorage();
+		const manager = SettingsManager.fromStorage(storage);
+		expect(manager.getCompactionEnabledOnError()).toBe(false);
+		manager.setCompactionEnabled(false);
+		manager.setCompactionEnabledOnError(true);
+		await manager.flush();
+		await manager.reload();
+		expect(manager.getCompactionEnabled()).toBe(false);
+		expect(manager.getCompactionEnabledOnError()).toBe(true);
+		manager.setCompactionEnabled(true);
+		manager.setCompactionEnabledOnError(false);
+		await manager.flush();
+		await manager.reload();
+		expect(manager.getCompactionEnabled()).toBe(true);
+		expect(manager.getCompactionEnabledOnError()).toBe(false);
+	});
+
 	it("uses defaults without compaction settings", () => {
 		const manager = SettingsManager.inMemory();
 		expect(manager.getCompactionSettings()).toEqual(defaults);

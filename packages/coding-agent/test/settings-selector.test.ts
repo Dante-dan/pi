@@ -22,6 +22,30 @@ describe("SettingsSelectorComponent", () => {
 		harness = undefined;
 	});
 
+	// Regression coverage for #10162.
+	it("offers independent auto-compaction and image-error recovery switches", () => {
+		const onAutoCompactChange = vi.fn();
+		const onAutoCompactOnErrorChange = vi.fn();
+		const config = {
+			autoCompact: false,
+			autoCompactOnError: false,
+			defaultModel: "not set",
+			availableDefaultModels: [],
+			modelThinkingLevels: {},
+			warnings: {},
+		} as unknown as SettingsConfig;
+		const callbacks = { onAutoCompactChange, onAutoCompactOnErrorChange } as unknown as SettingsCallbacks;
+		const list = new SettingsSelectorComponent(config, callbacks).getSettingsList();
+		list.selectItem("autocompact-on-error");
+		list.handleInput("\r");
+		expect(onAutoCompactOnErrorChange).toHaveBeenCalledWith(true);
+		expect(onAutoCompactChange).not.toHaveBeenCalled();
+		list.selectItem("autocompact");
+		list.handleInput("\r");
+		expect(onAutoCompactChange).toHaveBeenCalledWith(true);
+		expect(onAutoCompactOnErrorChange).toHaveBeenCalledTimes(1);
+	});
+
 	it("cycles through fullscreen settings", () => {
 		const onExitOutputChange = vi.fn();
 		const onScrollbarChange = vi.fn();

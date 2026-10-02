@@ -2903,7 +2903,8 @@ export class AgentSession {
 		toolResults: AgentMessage[] = [],
 	): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings(this.model);
-		if (!settings.enabled) return false;
+		const enabledOnError = this.settingsManager.getCompactionEnabledOnError();
+		if (!settings.enabled && !enabledOnError) return false;
 
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
 		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return false;
@@ -2953,14 +2954,32 @@ export class AgentSession {
 			(!entriesAfterAssistant.some((entry) => entry.type === "compaction") &&
 				latestAssistantEdit?.replacement !== null);
 		const assistantUsageMatchesProjection = assistantIsProjected && !hasPostAssistantContextEdit;
+		const imageCount = assistantMessage.errorMessage?.match(
+			/too\s+many\s+images\s+in\s+request:\s*(\d+)\s*>\s*(\d+)/i,
+		);
+		const imageCountError =
+			enabledOnError &&
+			sameModel &&
+			assistantRetainedForExplicitRecovery &&
+			assistantMessage.stopReason === "error" &&
+			imageCount !== undefined &&
+			imageCount !== null &&
+			Number.isSafeInteger(Number(imageCount[1])) &&
+			Number.isSafeInteger(Number(imageCount[2])) &&
+			Number(imageCount[2]) > 0 &&
+			Number(imageCount[1]) > Number(imageCount[2]);
 		const explicitOverflow = assistantMessage.stopReason === "error" && isContextOverflow(assistantMessage);
 		const contextOverflow =
+			settings.enabled &&
 			sameModel &&
 			((explicitOverflow && assistantRetainedForExplicitRecovery) ||
 				(assistantUsageMatchesProjection && isContextOverflow(assistantMessage, contextWindow)));
 		const recoverableLength =
-			sameModel && assistantIsProjected && isRecoverableLength(assistantMessage, messageModel.maxTokens);
-		if (contextOverflow || recoverableLength) {
+			settings.enabled &&
+			sameModel &&
+			assistantIsProjected &&
+			isRecoverableLength(assistantMessage, messageModel.maxTokens);
+		if (imageCountError || contextOverflow || recoverableLength) {
 			const willRetry = assistantMessage.stopReason !== "stop";
 
 			// Case 2: the response completed successfully. Compact, but do not retry because
@@ -2970,9 +2989,11 @@ export class AgentSession {
 			}
 
 			if (this._overflowRecoveryAttempted) {
-				const errorMessage = contextOverflow
-					? "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
-					: "Truncated response recovery failed after one compact-and-retry attempt.";
+				const errorMessage = imageCountError
+					? "Image-count recovery failed after one compact-and-retry attempt. Reduce images in the latest turn or start a new session."
+					: contextOverflow
+						? "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
+						: "Truncated response recovery failed after one compact-and-retry attempt.";
 				this._emit({
 					type: "compaction_end",
 					reason: "overflow",
@@ -2994,12 +3015,13 @@ export class AgentSession {
 			// Persistently omit the selected final attempt before post-run recovery compaction.
 			this._overflowRecoveryAttempted = true;
 			this._omitRecoveryAttempt(assistantMessage, toolResults);
-			const retry = await this._runAutoCompaction("overflow", willRetry);
+			const retry = await this._runAutoCompaction("overflow", willRetry, imageCountError);
 			if (retry) this._failedResponse = assistantMessage;
 			return retry;
 		}
 
 		// Case 3: threshold compaction without retry.
+		if (!settings.enabled) return false;
 		// For error messages or all-zero usage messages, estimate from the last valid response.
 		// This ensures sessions that hit persistent API errors (e.g. 529) or malformed zero-usage
 		// responses can still compact and do not reset context accounting.
@@ -3047,7 +3069,11 @@ export class AgentSession {
 	 * @param willRetry Whether to continue the interrupted turn after overflow compaction
 	 * @returns Whether the post-run loop should call `agent.continue()`
 	 */
-	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
+	private async _runAutoCompaction(
+		reason: "overflow" | "threshold",
+		willRetry: boolean,
+		imageCountError = false,
+	): Promise<boolean> {
 		const model = this.model;
 		const settings = this.settingsManager.getCompactionSettings(model);
 		let abortController: AbortController | undefined;
@@ -3169,7 +3195,7 @@ export class AgentSession {
 				const errorMessage = aborted
 					? undefined
 					: reason === "overflow"
-						? `Context overflow recovery failed: ${message}`
+						? `${imageCountError ? "Image-count" : "Context overflow"} recovery failed: ${message}`
 						: `Auto-compaction failed: ${message}`;
 				this._emit({
 					type: "compaction_end",

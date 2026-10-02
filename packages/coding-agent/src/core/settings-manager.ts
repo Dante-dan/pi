@@ -27,6 +27,7 @@ const DEFAULT_COMPACTION_TOKEN_SETTINGS: Required<CompactionModelOverride> = {
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
+	enabledOnError?: boolean; // default: false; recover explicit image-count rejections
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
 	modelOverrides?: Record<string, CompactionModelOverride>; // exact "provider/modelId" keys
@@ -921,6 +922,17 @@ export class SettingsManager {
 		}
 		this.globalSettings.compaction.enabled = enabled;
 		this.markModified("compaction", "enabled");
+		this.save();
+	}
+
+	getCompactionEnabledOnError(): boolean {
+		return this.settings.compaction?.enabledOnError === true;
+	}
+
+	setCompactionEnabledOnError(enabled: boolean): void {
+		this.globalSettings.compaction ??= {};
+		this.globalSettings.compaction.enabledOnError = enabled;
+		this.markModified("compaction", "enabledOnError");
 		this.save();
 	}
 

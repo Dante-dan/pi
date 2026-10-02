@@ -68,6 +68,7 @@ CLI tool options override this setting for one invocation; `--tools` does not ac
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `compaction.enabled` | boolean | `true` | Enable automatic compaction. |
+| `compaction.enabledOnError` | boolean | `false` | Independently opt in to one ordinary compact-and-retry after an explicit `Too many images in request: count > limit` rejection. Also available as **Auto-compact-on-error** in `/settings`. Stored images remain intact; recent images can still exceed the provider limit, in which case recovery stops. Other errors use the existing retry and compaction behavior. |
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for the model response. |
 | `compaction.keepRecentTokens` | number | `20000` | Recent tokens retained without summarization. |
 | `compaction.modelOverrides` | object | None | Per-model token settings keyed by exact `provider/modelId`. |
