@@ -227,6 +227,55 @@ describe("session context edits", () => {
 		expect(estimate.tokens).toBe(4_101);
 	});
 
+	// Regression for #10287: retry omissions do not change the usage anchor's prefix.
+	it("retains assistant usage when repeated failed retries are omitted", () => {
+		const session = SessionManager.inMemory();
+		session.appendMessage({ role: "user", content: "long history ".repeat(2_000), timestamp: Date.now() });
+		const response = assistant("answer");
+		response.usage = { ...response.usage, input: 4_000, output: 100, totalTokens: 4_100 };
+		session.appendMessage(response);
+		session.appendMessage({ role: "user", content: "next", timestamp: Date.now() });
+
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const failed = assistant("partial retry");
+			failed.stopReason = "error";
+			failed.usage = { ...failed.usage, input: 0, output: 0, totalTokens: 0 };
+			const failedId = session.appendMessage(failed);
+			session.appendContextEdit(failedId, null);
+
+			const estimate = estimateProjectedContextTokens(session.buildSessionProjection(), session.getBranch());
+			expect(estimate.usageTokens).toBe(4_100);
+			expect(estimate.trailingTokens).toBe(1);
+			expect(estimate.tokens).toBe(4_101);
+		}
+	});
+
+	// Regression for #10287: suffix edits use projected content without invalidating earlier usage.
+	it("estimates replaced trailing input while retaining earlier assistant usage", () => {
+		const session = SessionManager.inMemory();
+		session.appendMessage(assistant("answer"));
+		const userId = session.appendMessage({ role: "user", content: "original", timestamp: Date.now() });
+		session.appendContextEdit(userId, { content: "edited input" });
+
+		const estimate = estimateProjectedContextTokens(session.buildSessionProjection(), session.getBranch());
+		expect(estimate.usageTokens).toBe(11);
+		expect(estimate.trailingTokens).toBe(3);
+		expect(estimate.tokens).toBe(14);
+	});
+
+	// Regression for #10287: changing the anchor itself still invalidates its usage.
+	it("does not trust usage after replacing the anchor's content", () => {
+		const session = SessionManager.inMemory();
+		const response = assistant("answer");
+		response.usage = { ...response.usage, input: 4_000, totalTokens: 4_001 };
+		const assistantId = session.appendMessage(response);
+		session.appendContextEdit(assistantId, { content: "edited" });
+
+		const estimate = estimateProjectedContextTokens(session.buildSessionProjection(), session.getBranch());
+		expect(estimate.usageTokens).toBe(0);
+		expect(estimate.tokens).toBe(2);
+	});
+
 	it("does not reuse post-edit assistant usage after a later compaction", () => {
 		const session = SessionManager.inMemory();
 		const userId = session.appendMessage({ role: "user", content: "small input", timestamp: Date.now() });

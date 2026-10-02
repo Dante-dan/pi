@@ -223,7 +223,7 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 	};
 }
 
-/** Estimate projected context without trusting usage captured before a later edit or compaction. */
+/** Estimate projected context without trusting usage for an edited prefix or later compaction. */
 export function estimateProjectedContextTokens(
 	projection: SessionProjection,
 	branchEntries: SessionEntry[],
@@ -245,7 +245,12 @@ export function estimateProjectedContextTokens(
 		let latestInvalidatingEntryIndex = -1;
 		for (let i = branchEntries.length - 1; i >= 0; i--) {
 			const entry = branchEntries[i];
-			if (entry.type === "context_edit" || entry.type === "compaction") {
+			// Edits to the trailing suffix are already reflected in trailingTokens. In
+			// particular, omitting a failed retry must not invalidate the earlier usage.
+			const editsUsagePrefix =
+				entry.type === "context_edit" &&
+				branchEntries.findIndex((target) => target.id === entry.targetId) <= usageEntryIndex;
+			if (editsUsagePrefix || entry.type === "compaction") {
 				latestInvalidatingEntryIndex = i;
 				break;
 			}
