@@ -1,10 +1,18 @@
-import { fauxAssistantMessage, fauxToolCall, getCurrentTools, type TranscriptContext } from "@earendil-works/pi-ai";
+import {
+	fauxAssistantMessage,
+	fauxToolCall,
+	getCurrentSystemPrompt,
+	getCurrentTools,
+	type TranscriptContext,
+} from "@earendil-works/pi-ai";
 import type { ToolResultMessage } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "../../src/core/extensions/types.ts";
+import { createSyntheticSourceInfo } from "../../src/core/source-info.ts";
 import { createCodemodeExtension } from "../../src/extensions/codemode/index.ts";
 import { createToolSearchExtension } from "../../src/extensions/tool-search/index.ts";
+import { createTestExtensionsResult, createTestResourceLoader } from "../utilities.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 /**
@@ -57,6 +65,68 @@ describe("AgentSession tool orchestration", () => {
 
 	afterEach(() => {
 		while (harnesses.length > 0) harnesses.pop()?.cleanup();
+	});
+
+	// Regression #10343: hidden declarations still contributed prompt rules and skill-read hints.
+	it("keeps hidden tools callable without advertising them in prompt rules or skills", async () => {
+		let hideBuiltins = true;
+		let hookPrompt = "";
+		const extensionsResult = await createTestExtensionsResult([
+			(pi) => {
+				pi.on("before_agent_start", (event) => {
+					hookPrompt = event.systemPrompt;
+				});
+				pi.registerTool({
+					name: "run",
+					label: "run",
+					description: "Run tools indirectly.",
+					parameters: Type.Object({}),
+					prepareLoadout: () => ({ hiddenDeclarations: hideBuiltins ? ["read", "bash", "edit", "write"] : [] }),
+					execute: async () => ({ content: [{ type: "text", text: "done" }], details: {} }),
+				});
+			},
+		]);
+		const resourceLoader = createTestResourceLoader({ extensionsResult });
+		resourceLoader.getSkills = () => ({
+			skills: [
+				{
+					name: "demo",
+					description: "Demo skill",
+					filePath: "/skills/demo/SKILL.md",
+					baseDir: "/skills/demo",
+					sourceInfo: createSyntheticSourceInfo("<test:demo>", { source: "test" }),
+					disableModelInvocation: false,
+				},
+			],
+			diagnostics: [],
+		});
+		const harness = await createHarness({ resourceLoader });
+		harnesses.push(harness);
+		const assertHidden = (prompt: string) => {
+			expect(prompt).not.toContain("Use bash for file operations");
+			expect(prompt).not.toContain("<skills>");
+			expect(prompt).not.toContain("Use read to examine files");
+			expect(prompt).not.toContain("PI_* environment variables");
+			expect(prompt).not.toContain("Use edit");
+			expect(prompt).not.toContain("Use write");
+		};
+		assertHidden(harness.session.systemPrompt);
+		expect(harness.session.getCallableToolNames()).toEqual(expect.arrayContaining(["read", "bash", "edit", "write"]));
+		harness.setResponses([
+			(context) => {
+				assertHidden(getCurrentSystemPrompt(context.messages));
+				expect(getCurrentTools(context.messages).map((tool) => tool.name)).toEqual(["run"]);
+				return fauxAssistantMessage("done");
+			},
+		]);
+		await harness.session.prompt("go");
+		assertHidden(hookPrompt);
+		assertHidden(harness.session.systemPrompt);
+		expect(harness.session.getCallableToolNames()).toEqual(expect.arrayContaining(["read", "bash", "edit", "write"]));
+		hideBuiltins = false;
+		harness.session.setActiveToolsByName(harness.session.getActiveToolNames());
+		expect(harness.session.systemPrompt).toContain("Use bash for file operations");
+		expect(harness.session.systemPrompt).toContain("<skills>");
 	});
 
 	it("supports tools that call other tools under any name through the extension API", async () => {

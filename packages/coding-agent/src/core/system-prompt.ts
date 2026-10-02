@@ -13,6 +13,8 @@ export interface BuildSystemPromptOptions {
 	forceSystemPrompt?: string;
 	/** Tools to include in prompt. Default: [read, bash, edit, write]. */
 	selectedTools?: string[];
+	/** Active tools whose declarations are hidden from the model. They do not contribute prompt rules or skills. */
+	hiddenToolNames?: string[];
 	/** Optional one-line tool snippets keyed by tool name. */
 	toolSnippets?: Record<string, string>;
 	/** Guideline bullets contributed by each tool, keyed by tool name. */
@@ -33,6 +35,7 @@ export interface BuildSystemPromptOptions {
 
 export type NormalizedBuildSystemPromptOptions = BuildSystemPromptOptions & {
 	selectedTools: string[];
+	hiddenToolNames: string[];
 	toolSnippets: Record<string, string>;
 	toolGuidelines: Record<string, string[]>;
 	promptGuidelines: string[];
@@ -56,6 +59,7 @@ export function normalizeBuildSystemPromptOptions(input: BuildSystemPromptOption
 		customPrompt: input.customPrompt,
 		forceSystemPrompt: input.forceSystemPrompt,
 		selectedTools: [...(input.selectedTools ?? ["read", "bash", "edit", "write"])],
+		hiddenToolNames: [...(input.hiddenToolNames ?? [])],
 		toolSnippets: { ...(input.toolSnippets ?? {}) },
 		toolGuidelines: Object.fromEntries(
 			Object.entries(input.toolGuidelines ?? {}).map(([name, guidelines]) => [name, [...guidelines]]),
@@ -122,7 +126,7 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 	const options = normalizeBuildSystemPromptOptions(input);
 	const {
 		customPrompt,
-		selectedTools,
+		selectedTools: activeToolNames,
 		toolSnippets,
 		toolGuidelines,
 		promptGuidelines,
@@ -132,6 +136,7 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 		contextFiles,
 		skills,
 	} = options;
+	const selectedTools = activeToolNames.filter((name) => !options.hiddenToolNames.includes(name));
 
 	for (const name of Object.keys(customSections)) {
 		if (!SYSTEM_PROMPT_SECTION_NAME.test(name) || name === "preamble") {

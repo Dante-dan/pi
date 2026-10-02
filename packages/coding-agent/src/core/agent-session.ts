@@ -1671,6 +1671,7 @@ export class AgentSession {
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
 			selectedTools: validToolNames,
+			hiddenToolNames: [...this._hiddenDeclarations],
 			toolSnippets,
 			toolGuidelines: Object.fromEntries(this._toolPromptGuidelines),
 		});
@@ -1691,6 +1692,7 @@ export class AgentSession {
 		messages: AgentMessage[] = this.agent.state.messages,
 	): SystemMessage | undefined {
 		options.selectedTools = this._applyToolLoadout(options.selectedTools).map((tool) => tool.name);
+		options.hiddenToolNames = [...this._hiddenDeclarations];
 		// The tool list must match the declarations the request carries, so hidden tools are not listed.
 		options.toolSnippets = Object.fromEntries(
 			Object.entries(options.toolSnippets).filter(([name]) => !this._hiddenDeclarations.has(name)),
