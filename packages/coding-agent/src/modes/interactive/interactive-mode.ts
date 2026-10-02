@@ -286,7 +286,7 @@ function isUsageSessionEntry(item: RenderSessionItem): item is Extract<SessionEn
 	return "type" in item && item.type === "usage";
 }
 
-const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
+const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN", "ENXIO"]);
 
 function isDeadTerminalError(error: unknown): boolean {
 	if (!error || typeof error !== "object" || !("code" in error)) {
@@ -4327,8 +4327,12 @@ export class InteractiveMode {
 			}
 			throw error;
 		};
+		// A closed PTY can fail reads as well as writes. Handle stdin hangups
+		// here so normal terminal loss does not enter uncaught-crash reporting.
+		process.stdin.on("error", terminalErrorHandler);
 		process.stdout.on("error", terminalErrorHandler);
 		process.stderr.on("error", terminalErrorHandler);
+		this.signalCleanupHandlers.push(() => process.stdin.off("error", terminalErrorHandler));
 		this.signalCleanupHandlers.push(() => process.stdout.off("error", terminalErrorHandler));
 		this.signalCleanupHandlers.push(() => process.stderr.off("error", terminalErrorHandler));
 
