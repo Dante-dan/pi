@@ -7,7 +7,7 @@
 
 import { randomBytes } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
-import { oauthErrorHtml, oauthSuccessHtml } from "../../utils/oauth-page.ts";
+import { oauthCallbackHtml, oauthErrorHtml } from "../../utils/oauth-page.ts";
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
 import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { generatePKCE } from "./pkce.ts";
@@ -115,7 +115,11 @@ function startCallbackServer(expectedState: string): Promise<CallbackServer> {
 					return;
 				}
 
-				sendHtml(response, 200, oauthSuccessHtml("ChatGPT authentication completed. You can close this window."));
+				sendHtml(
+					response,
+					200,
+					oauthCallbackHtml("Return to Pi to check whether sign-in completed. You can close this window."),
+				);
 				resolveResult(authorizationResult);
 			} catch {
 				sendHtml(response, 500, oauthErrorHtml("Internal error while processing the callback."));

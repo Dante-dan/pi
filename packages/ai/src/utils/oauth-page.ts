@@ -99,6 +99,14 @@ export function oauthSuccessHtml(message: string): string {
 	});
 }
 
+export function oauthCallbackHtml(message: string): string {
+	return renderPage({
+		title: "Authorization callback received",
+		heading: "Authorization callback received",
+		message,
+	});
+}
+
 export function oauthErrorHtml(message: string, details?: string): string {
 	return renderPage({
 		title: "Authentication failed",
