@@ -378,6 +378,12 @@ export class AgentSession {
 	private _steeringMessages: string[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
+	/** Follow-ups after a compaction barrier stay out of the agent loop until it settles. */
+	private _deferredFollowUps: (
+		| { type: "message"; message: AgentMessage }
+		| { type: "compact"; text: string; customInstructions?: string }
+	)[] = [];
+	private _drainingFollowUps = false;
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 	/** Context-only custom messages queued during a run, flushed once the current turn's tool results are in. */
@@ -1840,7 +1846,37 @@ export class AgentSession {
 
 		// The low-level loop drains both queues before agent_end. Messages queued by
 		// agent_end handlers require a fresh run before pre-settlement handlers fire.
+		if (!this.agent.hasQueuedMessages() && message.stopReason !== "error") {
+			await this._drainDeferredFollowUps();
+		}
 		return !this._agentRunAbortRequested && this.agent.hasQueuedMessages();
+	}
+
+	private async _drainDeferredFollowUps(): Promise<void> {
+		this._drainingFollowUps = true;
+		try {
+			while (!this._agentRunAbortRequested && this._deferredFollowUps.length > 0) {
+				const next = this._deferredFollowUps[0];
+				if (next.type === "compact" && this.agent.hasQueuedMessages()) break;
+				this._deferredFollowUps.shift();
+				if (next.type === "message") {
+					this.agent.followUp(next.message);
+				} else {
+					const index = this._followUpMessages.indexOf(next.text);
+					if (index !== -1) this._followUpMessages.splice(index, 1);
+					this._emitQueueUpdate();
+					try {
+						// The low-level run is idle; do not abort the surrounding session run.
+						await this._compact(next.customInstructions);
+					} catch {
+						// compact() emits the failure. Preserve later work for dequeue/recovery.
+						break;
+					}
+				}
+			}
+		} finally {
+			this._drainingFollowUps = false;
+		}
 	}
 
 	private async _runBeforeSettleBoundary(): Promise<boolean> {
@@ -2212,7 +2248,23 @@ export class AgentSession {
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.followUp({ role: "user", content, timestamp: Date.now() });
+		this._enqueueFollowUp({ role: "user", content, timestamp: Date.now() });
+	}
+
+	private _enqueueFollowUp(message: AgentMessage): void {
+		if (this._deferredFollowUps.length > 0 || this._drainingFollowUps) {
+			this._deferredFollowUps.push({ type: "message", message });
+		} else {
+			this.agent.followUp(message);
+		}
+	}
+
+	/** Queue manual compaction after the current task and earlier follow-ups finish. */
+	queueCompaction(customInstructions?: string): void {
+		const text = customInstructions ? `/compact ${customInstructions}` : "/compact";
+		this._followUpMessages.push(text);
+		this._deferredFollowUps.push({ type: "compact", text, customInstructions });
+		this._emitQueueUpdate();
 	}
 
 	/**
@@ -2260,7 +2312,7 @@ export class AgentSession {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (this.isStreaming && options?.triggerTurn !== false) {
 			if (options?.deliverAs === "followUp") {
-				this.agent.followUp(appMessage);
+				this._enqueueFollowUp(appMessage);
 			} else {
 				this.agent.steer(appMessage);
 			}
@@ -2357,6 +2409,7 @@ export class AgentSession {
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
 		this._followUpMessages = [];
+		this._deferredFollowUps = [];
 		this.agent.clearAllQueues();
 		this._emitQueueUpdate();
 		return { steering, followUp };
@@ -2716,6 +2769,10 @@ export class AgentSession {
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
 		await this.abort();
+		return this._compact(customInstructions);
+	}
+
+	private async _compact(customInstructions?: string): Promise<CompactionResult> {
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
 		let fromExtension = false;

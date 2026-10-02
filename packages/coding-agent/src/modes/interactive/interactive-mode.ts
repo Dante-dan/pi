@@ -4387,6 +4387,12 @@ export class InteractiveMode {
 	private async handleFollowUp(): Promise<void> {
 		const text = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
 		if (!text) return;
+		if (text === "/compact" || text.startsWith("/compact ")) {
+			this.editor.addToHistory?.(text);
+			this.editor.setText("");
+			await this.handleCompactCommand(text.startsWith("/compact ") ? text.slice(9).trim() : undefined);
+			return;
+		}
 
 		// Queue input during compaction (extension commands execute immediately)
 		if (this.session.isCompacting) {
@@ -6993,6 +6999,11 @@ export class InteractiveMode {
 	}
 
 	private async handleCompactCommand(customInstructions?: string): Promise<void> {
+		if (this.session.isStreaming) {
+			this.session.queueCompaction(customInstructions);
+			this.showStatus("Queued compaction after earlier follow-ups");
+			return;
+		}
 		this.clearStatusIndicator();
 
 		try {
