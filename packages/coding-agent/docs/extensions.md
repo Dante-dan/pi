@@ -100,6 +100,8 @@ Use each event’s declared result type rather than assuming every return value 
 
 Events cover resource discovery, sessions, agent and message lifecycle, providers, tools, and raw input.
 
+`queue_update` notifies extensions when steering or follow-up input is queued, consumed, or cleared. `event.steering` and `event.followUp` are read-only text snapshots after input hooks and expansion. A queued message is removed before its `message_start`; clearing the queue emits empty snapshots without a corresponding message. Combine these events to track injected input. The event does not identify individual messages, and handlers are not awaited by queue operations.
+
 `before_agent_start` exposes both the current prompt and its structured `systemPromptOptions`. Prefer changing prompt sections, selected tools, or guidelines so Pi can append a transcript delta. Returning `systemPrompt`, or setting `forceSystemPrompt`, replaces the whole prompt for that run while the transcript continues recording the structured sections. Providers receive the forced text as their leading system prompt.
 
 `message_end` can replace a finalized message while preserving its role. `tool_call` can mutate input or block execution. `tool_result` handlers compose, with each handler seeing prior changes.

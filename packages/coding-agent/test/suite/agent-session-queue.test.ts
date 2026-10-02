@@ -1,6 +1,6 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, InputEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, InputEvent, QueueUpdateEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.ts";
@@ -66,6 +66,55 @@ describe("AgentSession queue characterization", () => {
 		}
 	});
 
+	// Regression test for #10317: extensions can observe injected input being discarded.
+	it.each(["steer", "followUp"] as const)(
+		"notifies extensions when %s input is queued and cleared",
+		async (deliverAs) => {
+			let api: ExtensionAPI | undefined;
+			const updates: QueueUpdateEvent[] = [];
+			let onQueued: (() => void) | undefined;
+			const queued = new Promise<void>((resolve) => {
+				onQueued = resolve;
+			});
+			const waiting = await createWaitingHarness({
+				extensionFactories: [
+					(pi) => {
+						api = pi;
+						pi.on("queue_update", (event) => {
+							updates.push(event);
+							onQueued?.();
+						});
+					},
+				],
+			});
+			const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+			harnesses.push(harness);
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("done"),
+			]);
+
+			await waitForToolStart;
+			try {
+				api?.sendUserMessage("injected", { deliverAs });
+				await queued;
+				harness.session.clearQueue();
+				expect(updates).toEqual([
+					{
+						type: "queue_update",
+						steering: deliverAs === "steer" ? ["injected"] : [],
+						followUp: deliverAs === "followUp" ? ["injected"] : [],
+					},
+					{ type: "queue_update", steering: [], followUp: [] },
+				]);
+			} finally {
+				releaseToolExecution();
+			}
+			await promptPromise;
+			expect(getUserTexts(harness)).toEqual(["start"]);
+		},
+	);
+
 	it("dispatches extension commands immediately when prompted while idle", async () => {
 		const commandRuns: string[] = [];
 		const harness = await createHarness({
@@ -91,10 +140,14 @@ describe("AgentSession queue characterization", () => {
 
 	it("delivers extension-origin steering messages before the next LLM call", async () => {
 		let extensionApi: ExtensionAPI | undefined;
+		const queueUpdates: QueueUpdateEvent[] = [];
 		const waiting = await createWaitingHarness({
 			extensionFactories: [
 				(pi) => {
 					extensionApi = pi;
+					pi.on("queue_update", (event) => {
+						queueUpdates.push(event);
+					});
 				},
 			],
 		});
@@ -120,6 +173,10 @@ describe("AgentSession queue characterization", () => {
 
 		expect(getUserTexts(harness)).toEqual(["start", "steer now"]);
 		expect(getAssistantTexts(harness)).toContain("saw steer");
+		expect(queueUpdates).toEqual([
+			{ type: "queue_update", steering: ["steer now"], followUp: [] },
+			{ type: "queue_update", steering: [], followUp: [] },
+		]);
 	});
 
 	it("delivers follow-up messages only after the current run finishes", async () => {

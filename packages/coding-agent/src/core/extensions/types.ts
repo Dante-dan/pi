@@ -733,6 +733,15 @@ export interface SessionInfoChangedEvent {
 	name: string | undefined;
 }
 
+/** Notification when queued input is added, consumed, or cleared. */
+export interface QueueUpdateEvent {
+	type: "queue_update";
+	/** Snapshot of pending steering text, after input hooks and expansion. */
+	steering: readonly string[];
+	/** Snapshot of pending follow-up text, after input hooks and expansion. */
+	followUp: readonly string[];
+}
+
 /** Fired before switching to another session (can be cancelled) */
 export interface SessionBeforeSwitchEvent {
 	type: "session_before_switch";
@@ -828,6 +837,7 @@ export interface SessionTreeEvent {
 export type SessionEvent =
 	| SessionStartEvent
 	| SessionInfoChangedEvent
+	| QueueUpdateEvent
 	| SessionBeforeSwitchEvent
 	| SessionBeforeForkEvent
 	| SessionBeforeCompactEvent
@@ -1549,6 +1559,7 @@ export interface ExtensionAPI {
 	): () => void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): () => void;
 	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): () => void;
+	on(event: "queue_update", handler: ExtensionHandler<QueueUpdateEvent>): () => void;
 	on(
 		event: "session_before_switch",
 		handler: ExtensionHandler<SessionBeforeSwitchEvent, SessionBeforeSwitchResult>,

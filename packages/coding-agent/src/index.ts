@@ -140,6 +140,7 @@ export type {
 	ProviderConfig,
 	ProviderModelConfig,
 	ProviderStreamEvent,
+	QueueUpdateEvent,
 	ReadToolCallEvent,
 	RegisteredCommand,
 	RegisteredTool,
