@@ -538,6 +538,11 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 	}
 
+	/** Handle renderer input after public listeners have had a chance to consume or rewrite it. */
+	protected handleRendererInput(_data: string): { consume?: boolean } | undefined {
+		return undefined;
+	}
+
 	protected abstract doRender(): void;
 
 	protected resetRenderState(): void {}
@@ -1064,6 +1069,10 @@ export abstract class TuiBase extends Container implements TUI {
 				return;
 			}
 			data = current;
+		}
+
+		if (this.handleRendererInput(data)?.consume) {
+			return;
 		}
 
 		// Consume terminal cell size responses without blocking unrelated input.

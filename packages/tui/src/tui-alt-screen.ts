@@ -278,7 +278,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.onRightClickPaste = options.onRightClickPaste;
 		this.copyOnSelect = options.copyOnSelect ?? true;
 		this.copySelection = options.copySelection;
-		this.addInputListener((data) => this.handleViewportInput(data));
 	}
 
 	get viewportTop(): number {
@@ -669,7 +668,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.mousePressMoved = false;
 	}
 
-	private handleViewportInput(data: string): { consume?: boolean } | undefined {
+	protected override handleRendererInput(data: string): { consume?: boolean } | undefined {
 		if (data === FOCUS_OUT) {
 			const hadActiveSelection = this.selectionPressActive;
 			const hadNonEmptyActiveSelection = hadActiveSelection && this.getSelectionBounds() !== undefined;
