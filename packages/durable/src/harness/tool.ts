@@ -188,6 +188,7 @@ async function run(
 		taskId: runtime.taskId,
 		conversationId: runtime.conversationId,
 		callId: call.id,
+		models: runtime.models,
 		registry: runtime.registry,
 		agent: runtime.agent,
 		output: (chunk) => {

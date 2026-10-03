@@ -2537,6 +2537,8 @@ type HookResult<T> = T | undefined | Promise<T | undefined>;
 interface HookApi extends DocumentReader {
   readonly taskId: TaskId;
   readonly conversationId: ConversationId;
+  /** The Harness model access used by generation, with its catalog and credentials. */
+  readonly models: Models;
   memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
   memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
 }
@@ -2665,6 +2667,8 @@ interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extends Docum
   readonly taskId: TaskId;
   readonly conversationId: ConversationId;
   readonly callId: string;
+  /** The Harness model access used by generation, with its catalog and credentials. */
+  readonly models: Models;
   /** The tool task's phase snapshot. */
   readonly registry: RegistrySnapshot;
   /** The calling conversation's agent, as the tool task's phase resolved it. */
