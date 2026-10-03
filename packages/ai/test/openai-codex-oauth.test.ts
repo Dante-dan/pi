@@ -454,6 +454,57 @@ describe("OpenAI Codex OAuth", () => {
 		);
 	});
 
+	// #10300: plan eligibility must not be inferred from a generic invalid_grant.
+	it.each(["invalid_grant", "server_error"])(
+		"preserves %s token errors and adds login help only for invalid_grant",
+		async (code) => {
+			const body = { error: code, error_description: "Provider diagnostic" };
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (input: unknown): Promise<Response> => {
+					const url = getUrl(input);
+					if (url.endsWith("/deviceauth/usercode")) {
+						return jsonResponse({ device_auth_id: "device", user_code: "CODE", interval: "1" });
+					}
+					if (url.endsWith("/deviceauth/token")) {
+						return jsonResponse({ authorization_code: "code", code_verifier: "verifier" });
+					}
+					return jsonResponse(body, 400);
+				}),
+			);
+			const error = await loginOpenAICodexDeviceCodeForTest({ onDeviceCode: () => {} }).catch(
+				(error: unknown) => error,
+			);
+			expect(error).toBeInstanceOf(Error);
+			const message = (error as Error).message;
+			expect(message).toContain(`OpenAI Codex token exchange failed (400): ${JSON.stringify(body)}`);
+			if (code === "invalid_grant") {
+				expect(message).toContain("Start a new login attempt");
+				expect(message).toContain("does not identify your plan");
+			} else {
+				expect(message).toBe(`OpenAI Codex token exchange failed (400): ${JSON.stringify(body)}`);
+			}
+			await expect(
+				openaiCodexOAuth.refresh(
+					{ type: "oauth", access: "access", refresh: "refresh", expires: 0 },
+					neverAbortedSignal,
+				),
+			).rejects.toMatchObject({ message: `OpenAI Codex token refresh failed (400): ${JSON.stringify(body)}` });
+		},
+	);
+
+	// #10300: transport failures are not account eligibility diagnostics.
+	it("preserves network failures without adding plan guidance", async () => {
+		const error = new TypeError("Network unavailable");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw error;
+			}),
+		);
+		await expect(loginOpenAICodexDeviceCodeForTest({ onDeviceCode: () => {} })).rejects.toBe(error);
+	});
+
 	it("does not write token refresh failures to stderr", async () => {
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 		vi.stubGlobal(

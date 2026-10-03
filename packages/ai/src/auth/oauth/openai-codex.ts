@@ -122,7 +122,18 @@ async function fetchWithLoginCancellation(input: string, init: RequestInit): Pro
 async function readTokenResponse(response: Response, operation: TokenOperation): Promise<OAuthToken> {
 	if (!response.ok) {
 		const text = await response.text().catch(() => "");
-		throw new Error(`OpenAI Codex token ${operation} failed (${response.status}): ${text || response.statusText}`);
+		let errorCode: unknown;
+		try {
+			const json = JSON.parse(text) as { error?: string | { code?: string } } | null;
+			errorCode = typeof json?.error === "object" ? json.error?.code : json?.error;
+		} catch {}
+		const help =
+			operation === "exchange" && errorCode === "invalid_grant"
+				? " Start a new login attempt; authorization codes can expire or have already been used. If it still fails, check that the selected ChatGPT account has Codex access: https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan. This error does not identify your plan or prove that an upgrade is required."
+				: "";
+		throw new Error(
+			`OpenAI Codex token ${operation} failed (${response.status}): ${text || response.statusText}${help}`,
+		);
 	}
 
 	const rawJson = await response.json();
