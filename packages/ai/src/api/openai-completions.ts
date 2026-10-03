@@ -240,6 +240,21 @@ function parseLegacyEncryptedReasoningDetail(
 	}
 }
 
+// Tag Google compatibility signatures so they cannot be replayed as legacy
+// OpenRouter encrypted reasoning details (or native Google signatures).
+function parseGoogleThoughtSignature(signature: string | undefined): string | undefined {
+	if (!signature) return undefined;
+	try {
+		const parsed = JSON.parse(signature) as { type?: unknown; signature?: unknown } | null;
+		return parsed?.type === "google.thought_signature" &&
+			typeof parsed.signature === "string" && parsed.signature.length > 0
+			? parsed.signature
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function fillMissingCommonReasoningDetailFields(
 	target: OpenAIReasoningDetailBase,
 	source: OpenAIReasoningDetail,
@@ -393,6 +408,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				type?: string;
 				function?: { name?: string; arguments?: string };
 				custom?: { name?: string; input?: string };
+				extra_content?: { google?: { thought_signature?: unknown } };
 			};
 
 			let textBlock: TextContent | null = null;
@@ -635,6 +651,13 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					if (choice?.delta?.tool_calls) {
 						for (const toolCall of choice.delta.tool_calls as StreamingToolCallDelta[]) {
 							const block = ensureToolCallBlock(toolCall);
+							const googleSignature = toolCall.extra_content?.google?.thought_signature;
+							if (typeof googleSignature === "string" && googleSignature.length > 0) {
+								block.thoughtSignature = JSON.stringify({
+									type: "google.thought_signature",
+									signature: googleSignature,
+								});
+							}
 							if (!block.id && toolCall.id) {
 								block.id = toolCall.id;
 								toolCallBlocksById.set(toolCall.id, block);
@@ -1362,9 +1385,13 @@ export function convertMessages(
 							},
 						};
 					}
+					const googleSignature = parseGoogleThoughtSignature(tc.thoughtSignature);
 					return {
 						id: tc.id,
 						type: "function",
+						...(googleSignature !== undefined && {
+							extra_content: { google: { thought_signature: googleSignature } },
+						}),
 						function: {
 							name: tc.name,
 							arguments: JSON.stringify(tc.arguments),

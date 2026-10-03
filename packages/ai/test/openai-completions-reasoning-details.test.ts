@@ -96,8 +96,8 @@ function toolCallChunk(): unknown {
 	});
 }
 
-async function runOpenAICompletionsStream(messages: AssistantMessage[] = []): Promise<AssistantMessage> {
-	return await streamOpenAICompletions(model(), normalizeContext({ messages, tools: [readTool] }), {
+async function runOpenAICompletionsStream(messages: AssistantMessage[] = [], targetModel = model()): Promise<AssistantMessage> {
+	return await streamOpenAICompletions(targetModel, normalizeContext({ messages, tools: [readTool] }), {
 		apiKey: "test",
 	}).result();
 }
@@ -250,5 +250,64 @@ describe("openai-completions reasoning_details streaming", () => {
 		await runOpenAICompletionsStream([assistantMessage]);
 
 		expect(getAssistantPayload(mockState.payloads[1])?.reasoning_details).toEqual(expectedReasoningDetails);
+	});
+});
+
+// Regression for #10157: Google-compatible tool-call signatures must survive replay.
+describe("openai-completions Google thought signatures", () => {
+	beforeEach(() => {
+		mockState.chunkSets = [];
+		mockState.payloads = [];
+	});
+
+	it.each([false, true])("round-trips an observed signature (late delta: %s) without changing reasoning_details", async (late) => {
+		const extra_content = { google: { thought_signature: "opaque+/signature==" } };
+		const call = { index: 0, id: "call_1", type: "function", function: { name: "read", arguments: '{"path":"README.md"}' } };
+		const deltas = late
+			? [chunk({ tool_calls: [call] }), chunk({ tool_calls: [{ index: 0, extra_content }] })]
+			: [chunk({ tool_calls: [{ ...call, extra_content }] })];
+		mockState.chunkSets = [
+			[chunk({ reasoning_details: [reasoningDetail] }), ...deltas, chunk({}, "tool_calls")],
+			[chunk({ content: "ok" }), chunk({}, "stop")],
+		];
+		const result = await runOpenAICompletionsStream();
+		expect(result.stopReason).toBe("toolUse");
+		const stored = JSON.parse(JSON.stringify(result)) as AssistantMessage;
+		await runOpenAICompletionsStream([stored]);
+		const assistant = getAssistantPayload(mockState.payloads[1]) as { tool_calls: unknown[]; reasoning_details?: unknown };
+		expect(assistant.tool_calls).toEqual([{ id: "call_1", type: "function", function: call.function, extra_content }]);
+		expect(assistant.reasoning_details).toEqual([reasoningDetail]);
+	});
+
+	it("keeps signatures on their matching tool-call index only", async () => {
+		mockState.chunkSets = [[chunk({ tool_calls: [
+			{ index: 0, id: "call_1", function: { name: "read", arguments: "{}" }, extra_content: { google: { thought_signature: "first" } } },
+			{ index: 1, id: "call_2", function: { name: "read", arguments: "{}" } },
+		] }), chunk({}, "tool_calls")], [chunk({ content: "ok" }), chunk({}, "stop")]];
+		const result = await runOpenAICompletionsStream();
+		await runOpenAICompletionsStream([result]);
+		const assistant = getAssistantPayload(mockState.payloads[1]) as { tool_calls: Array<{ extra_content?: unknown }> };
+		expect(assistant.tool_calls[0].extra_content).toEqual({ google: { thought_signature: "first" } });
+		expect(assistant.tool_calls[1]).not.toHaveProperty("extra_content");
+	});
+
+	it.each([{ id: "another-model" }, { provider: "another-provider" }, { api: "google-generative-ai" }])("does not replay across an origin change: %j", async (origin) => {
+		mockState.chunkSets = [[chunk({ tool_calls: [{ index: 0, id: "call_1", function: { name: "read", arguments: "{}" }, extra_content: { google: { thought_signature: "signature" } } }] }), chunk({}, "tool_calls")], [chunk({ content: "ok" }), chunk({}, "stop")]];
+		const result = await runOpenAICompletionsStream();
+		const target = { ...model(), ...origin, api: "openai-completions" } as Model<"openai-completions">;
+		if ("api" in origin) result.api = "google-generative-ai";
+		await runOpenAICompletionsStream([result], target);
+		const assistant = getAssistantPayload(mockState.payloads[1]) as { tool_calls: Array<{ extra_content?: unknown }> };
+		expect(assistant.tool_calls[0]).not.toHaveProperty("extra_content");
+		expect(result.content.find((block) => block.type === "toolCall")?.thoughtSignature).toBeDefined();
+	});
+
+	it.each([undefined, "", 42, null])("does not create signatures for missing or invalid fields: %j", async (thought_signature) => {
+		mockState.chunkSets = [[chunk({ tool_calls: [{ index: 0, id: "call_1", function: { name: "read", arguments: "{}" }, extra_content: { google: { thought_signature } } }] }), chunk({}, "tool_calls")], [chunk({ content: "ok" }), chunk({}, "stop")]];
+		const result = await runOpenAICompletionsStream();
+		expect(result.content.find((block) => block.type === "toolCall")).not.toHaveProperty("thoughtSignature");
+		await runOpenAICompletionsStream([result]);
+		const assistant = getAssistantPayload(mockState.payloads[1]) as { tool_calls: Array<{ extra_content?: unknown }> };
+		expect(assistant.tool_calls[0]).not.toHaveProperty("extra_content");
 	});
 });
