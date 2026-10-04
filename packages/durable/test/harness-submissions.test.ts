@@ -132,7 +132,12 @@ describe("submissions", () => {
 			context,
 		);
 		expect(retry.id).toBe(first.id);
-		await expect(root.submit({ type: "input", kind: Event.kind, data: { source: "rejected" }, content: "no", whenBusy: "reject" }, context)).rejects.toBeInstanceOf(ConversationBusy);
+		await expect(
+			root.submit(
+				{ type: "input", kind: Event.kind, data: { source: "rejected" }, content: "no", whenBusy: "reject" },
+				context,
+			),
+		).rejects.toBeInstanceOf(ConversationBusy);
 		expect(storage.commits).toHaveLength(commits);
 		expect((await allEntries(root)).filter((value) => Event.is(value))).toHaveLength(1);
 		await harness.close(context);
@@ -143,11 +148,25 @@ describe("submissions", () => {
 		const path = await sqlitePath();
 		const setup = chatSetup();
 		const busy = unanswered();
-		setup.faux.setResponses([busy.step, fauxAssistantMessage("resumed answer"), fauxAssistantMessage("custom answer")]);
+		setup.faux.setResponses([
+			busy.step,
+			fauxAssistantMessage("resumed answer"),
+			fauxAssistantMessage("custom answer"),
+		]);
 		let opened = await openChat(await openNodeSqliteStorage(path), setup);
 		await opened.root.submit({ type: "input", content: "first" }, context);
 		await busy.reached;
-		const queued = await opened.root.submit({ type: "input", kind: "app.event", data: { source: whenBusy, nested: [1, null] }, content: "custom", whenBusy, requestId: "queued" }, context);
+		const queued = await opened.root.submit(
+			{
+				type: "input",
+				kind: "app.event",
+				data: { source: whenBusy, nested: [1, null] },
+				content: "custom",
+				whenBusy,
+				requestId: "queued",
+			},
+			context,
+		);
 		expect((await queued.status(context)).status).toBe("queued");
 		await opened.harness.close(context);
 		opened = await openChat(await openNodeSqliteStorage(path), setup);
@@ -156,8 +175,18 @@ describe("submissions", () => {
 		expect(settled).toMatchObject({ id: queued.id, type: "input", status: "done", requestId: "queued" });
 		if (settled.status !== "done" || settled.type !== "input") throw new Error(`Unexpected ${settled.status}`);
 		const entries = await allEntries(opened.root);
-		expect(entries.filter((entry) => entry.kind === "app.event")).toEqual([expect.objectContaining({ id: settled.entry, data: { source: whenBusy, nested: [1, null] }, model: [expect.objectContaining({ role: "user", content: "custom" })] })]);
-		expect((await opened.root.context(context)).messages.some((message) => message.role === "user" && message.content === "custom")).toBe(true);
+		expect(entries.filter((entry) => entry.kind === "app.event")).toEqual([
+			expect.objectContaining({
+				id: settled.entry,
+				data: { source: whenBusy, nested: [1, null] },
+				model: [expect.objectContaining({ role: "user", content: "custom" })],
+			}),
+		]);
+		expect(
+			(await opened.root.context(context)).messages.some(
+				(message) => message.role === "user" && message.content === "custom",
+			),
+		).toBe(true);
 		const retry = await opened.root.submit({ type: "input", content: "retry", requestId: "queued" }, context);
 		expect(retry.id).toBe(queued.id);
 		expect((await recovered.status(context)).status).toBe("done");
@@ -168,7 +197,9 @@ describe("submissions", () => {
 		const storage = new ControlledStorage();
 		const { harness, root } = await openChat(storage, chatSetup());
 		const commits = storage.commits.length;
-		await expect(root.submit({ type: "input", kind: "", content: "no" }, context)).rejects.toThrow("Entry kind must be a non-empty string");
+		await expect(root.submit({ type: "input", kind: "", content: "no" }, context)).rejects.toThrow(
+			"Entry kind must be a non-empty string",
+		);
 		expect(storage.commits).toHaveLength(commits);
 		expect(await allEntries(root)).toEqual([]);
 		expect(await harness.snapshot(LiveDoc, root.id, context)).toEqual({});

@@ -307,6 +307,29 @@ await root.submit({ type: "write", entry: { kind: "app.note", data: "user opened
 
 If a run fails, queued items stay in the inbox until the next submission places them, oldest first.
 
+Custom inputs keep application metadata on the same entry that starts or joins
+a run. Set `kind` and `data` alongside `content`:
+
+```typescript
+const submission = await root.submit(
+	{
+		type: "input",
+		kind: "app.webhook",
+		data: { source: "deploy", build: 42 },
+		content: "A new deployment finished. Check its health.",
+		requestId: "deploy-42",
+		whenBusy: "steer",
+	},
+	context,
+);
+```
+
+The entry retains the structured `data`, while the model receives one user
+message from `content`. Omit `kind` for the usual `pi.user` entry. Custom inputs
+use the same busy policies, request-ID deduplication, answer settlement and
+abort behavior; queued metadata survives closing and reopening the Harness.
+A passive `write` submission still does not start a run.
+
 ## Reset and Handoff
 
 `reset()` starts a new context. The model no longer sees older entries, but they stay in storage:

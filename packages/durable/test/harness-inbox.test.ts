@@ -200,7 +200,8 @@ describe("inbox", () => {
 		await harness.close(context);
 	});
 
-	it("adds steers to the run at the postTools boundary and holds follow-ups for the final boundary", async () => {
+	// #10407: application inputs retain ordinary boundary and answer ownership.
+	it.each([undefined, "app.event"])("places %s steers after tools and follow-ups after the answer", async (kind) => {
 		const setup = chatSetup();
 		const gate = deferred();
 		holdTool(setup, gate);
@@ -208,19 +209,25 @@ describe("inbox", () => {
 		const { harness, root } = await openChat(new MemoryStorage(), setup);
 		const input = await root.submit({ type: "input", content: "a" }, context);
 		await toolRunning(harness, root);
-		const steer = await root.submit({ type: "input", content: "s", whenBusy: "steer" }, context);
-		const followUp = await root.submit({ type: "input", content: "f" }, context);
+		const steer = await root.submit(
+			{ type: "input", content: "s", kind, data: { source: "steer" }, whenBusy: "steer" },
+			context,
+		);
+		const followUp = await root.submit({ type: "input", content: "f", kind, data: { source: "followUp" } }, context);
 		gate.resolve();
 		await followUp.wait(context);
 		expect(transcript(await allEntries(root))).toEqual([
 			"pi.user:a",
 			"pi.assistant",
 			"pi.tool-result",
-			"pi.user:s",
+			`${kind ?? "pi.user"}:s`,
 			"pi.assistant:after tools",
-			"pi.user:f",
+			`${kind ?? "pi.user"}:f`,
 			"pi.assistant:follow-up",
 		]);
+		const entries = await allEntries(root);
+		expect(entries.find((entry) => textOf(entry.model?.[0]) === "s")?.data).toEqual({ source: "steer" });
+		expect(entries.find((entry) => textOf(entry.model?.[0]) === "f")?.data).toEqual({ source: "followUp" });
 		const answers = (await allEntries(root)).filter((entry) => entry.kind === "pi.assistant");
 		expect(await status(input)).toMatchObject({ status: "done", answer: answers[1]!.id });
 		expect(await status(steer)).toMatchObject({ status: "done", answer: answers[1]!.id });
@@ -382,7 +389,8 @@ describe("inbox", () => {
 		await harness.close(context);
 	});
 
-	it("withdraws a queued submission and removes its item", async () => {
+	// #10407: withdrawing custom input never publishes its entry.
+	it.each([undefined, "app.event"])("withdraws a queued %s submission and removes its item", async (kind) => {
 		const setup = chatSetup();
 		const first = gated(answer("first"));
 		setup.faux.setResponses([first.step]);
@@ -390,7 +398,10 @@ describe("inbox", () => {
 		const input = await root.submit({ type: "input", content: "a" }, context);
 		await first.reached;
 		const kept = await root.submit({ type: "write", entry: { kind: "note" } }, context);
-		const withdrawn = await root.submit({ type: "input", content: "f" }, context);
+		const withdrawn = await root.submit(
+			{ type: "input", content: "f", kind, data: { source: "withdrawn" } },
+			context,
+		);
 		expect(await withdrawn.abort(context)).toBe("aborted");
 		expect(await withdrawn.wait(context)).toMatchObject({ status: "unanswered", reason: "aborted" });
 		expect(await inbox(harness, root)).toEqual([[kept.id, "write"]]);
@@ -398,6 +409,11 @@ describe("inbox", () => {
 		await input.wait(context);
 		expect(await status(kept)).toMatchObject({ status: "done" });
 		expect(setup.faux.state.callCount).toBe(1);
+		expect(
+			(await allEntries(root)).some(
+				(entry) => entry.data && typeof entry.data === "object" && "source" in entry.data,
+			),
+		).toBe(false);
 		await harness.close(context);
 	});
 

@@ -306,6 +306,8 @@ type SubmissionDraft = {
   | {
       readonly type: "input";
       readonly content: UserInput;
+      readonly kind?: string;
+      readonly data?: JsonValue;
       readonly whenBusy?: "steer" | "followUp" | "reject";
       readonly entry?: never;
     }
@@ -2150,7 +2152,13 @@ wait in the built-in inbox document, an ordered list of tagged items:
 
 ```ts
 type InboxItem =
-  | { readonly id: SubmissionId; readonly mode: "steer" | "followUp"; readonly content: UserInput }
+  | {
+      readonly id: SubmissionId;
+      readonly mode: "steer" | "followUp";
+      readonly content: UserInput;
+      readonly kind?: string;
+      readonly data?: JsonValue;
+    }
   /** `entry` is the write's `EntryDraft`, stored as plain JSON. */
   | { readonly id: SubmissionId; readonly mode: "write"; readonly entry: JsonObject };
 
@@ -2167,8 +2175,16 @@ type InboxState = { items: InboxItem[] };
 | view mount | `docs["pi.inbox"]` |
 | created | with every Harness conversation (section 2.2) |
 
-Items are in ID order. A queued input stores its content; its `pi.user` entry
-gets the Harness clock's timestamp at placement. Queued submissions belong to
+Items are in ID order. An input defaults to entry kind `pi.user`; `kind` may
+instead name a non-empty application entry kind, and optional `data` carries
+structured application JSON. The Harness constructs exactly one `UserMessage`
+from `content`, with its clock's timestamp at admission or placement; callers
+cannot supply another model-message role or entry control fields through an
+input submission. Kind and data do not change input admission, request-ID
+deduplication, run ownership, answer settlement, or abort semantics.
+
+A queued input stores its content and optional kind and data in the inbox, so
+all three survive checkpoint and reopen together. Queued submissions belong to
 their conversation, so a fork starts with an empty inbox.
 
 Run control lives in the built-in live document `pi.live` (section 8). Its
@@ -3221,7 +3237,8 @@ does not delete transcript history.
 
 ### 8.1 Built-in entries
 
-Built-in entry kinds carry no `data`, except `pi.tool-result`, whose token is
+Built-in writers carry no `data`, except input submissions may carry application
+data (section 6), `pi.tool-result`, whose token is
 `Entry<{ diagnostics: ToolDiagnostic[] }>`; every tool result carries `data`,
 with an empty list when it has no diagnostics (section 7.3), and
 `pi.compaction`, whose token is `Entry<{ reason: CompactionReason }>`. Each kind
