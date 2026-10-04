@@ -106,6 +106,55 @@ function blockingTool(name: string, extra: Partial<ToolRegistration> = {}) {
 }
 
 describe("tool recovery", () => {
+	// https://github.com/earendil-works/pi/issues/10455
+	it("recovers nested calls only by replaying a safe parent", async () => {
+		for (const replay of ["safe", "unsafe"] as const) {
+			const path = await sqlitePath();
+			const setup = chatSetup();
+			const started = deferred();
+			let runs = 0;
+			addTool(
+				setup.registry,
+				tool("child", async (_args, _api, callContext) => {
+					if (++runs === 1) {
+						started.resolve();
+						await aborted(callContext.abortSignal!);
+					}
+					return {};
+				}),
+			);
+			addTool(
+				setup.registry,
+				tool(
+					"parent",
+					async (_args, api, callContext) => {
+						await api.executeTool("child", {}, callContext);
+						return {};
+					},
+					{ replay },
+				),
+			);
+			setup.faux.setResponses([call("parent"), DONE]);
+			let opened = await open(path, setup);
+			const id = (await opened.root.submit({ type: "input", content: "go" }, context)).id;
+			await started.promise;
+			await waitFor(
+				async () =>
+					(await opened.harness.snapshot(LiveDoc, opened.root.id, context))?.tools?.[0]?.nestedCalls !== undefined,
+			);
+			await opened.harness.close(context);
+			opened = await open(path, setup);
+			await (await opened.harness.submission(id, context))!.wait(context);
+			expect(runs).toBe(replay === "safe" ? 2 : 1);
+			const result = results(await allEntries(opened.root))[0]!;
+			expect(result.nestedCalls).toMatchObject({
+				complete: replay === "safe",
+				calls: [{ id: "c1/1", status: replay === "safe" ? "ok" : "unfinished" }],
+			});
+			await opened.harness.close(context);
+		}
+	});
+
 	it("answers an unsafe tool interrupted after intent with its durable partial output", async () => {
 		const path = await sqlitePath();
 		const setup = chatSetup();

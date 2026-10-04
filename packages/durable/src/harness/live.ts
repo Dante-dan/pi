@@ -1,5 +1,5 @@
 import type { Draft, JsonRepresentation, JsonValue } from "@earendil-works/chord";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, NestedToolCalls } from "@earendil-works/pi-ai";
 import { defineDoc } from "../documents.ts";
 import type { Transaction } from "../session/transaction.ts";
 import type { EntryId, SubmissionId, SubmissionSettlement, TaskId, TaskRecord, Tx } from "../types.ts";
@@ -25,6 +25,8 @@ export type ToolSlot = {
 	details?: JsonValue;
 	/** Diagnostics recorded through `api.diagnostic()`. */
 	diagnostics?: ToolDiagnostic[];
+	/** Bounded nested invocation metadata; nested output never replaces this slot's output. */
+	nestedCalls?: JsonRepresentation<NestedToolCalls>;
 	/** Result entry once done; absent when the tool task faulted or was orphaned. */
 	entry?: EntryId;
 };
@@ -132,6 +134,7 @@ export function clearProgress(slot: Draft<ToolSlot>): void {
 	delete slot.droppedLines;
 	delete slot.details;
 	delete slot.diagnostics;
+	delete slot.nestedCalls;
 }
 
 /**
