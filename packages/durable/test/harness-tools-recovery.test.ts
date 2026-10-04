@@ -113,9 +113,11 @@ describe("tool recovery", () => {
 			const setup = chatSetup();
 			const started = deferred();
 			let runs = 0;
+			const identities: [TaskId, string][] = [];
 			addTool(
 				setup.registry,
-				tool("child", async (_args, _api, callContext) => {
+				tool("child", async (_args, api, callContext) => {
+					identities.push([api.taskId, api.callId]);
 					if (++runs === 1) {
 						started.resolve();
 						await aborted(callContext.abortSignal!);
@@ -146,6 +148,7 @@ describe("tool recovery", () => {
 			opened = await open(path, setup);
 			await (await opened.harness.submission(id, context))!.wait(context);
 			expect(runs).toBe(replay === "safe" ? 2 : 1);
+			if (replay === "safe") expect(identities[1]).toEqual(identities[0]);
 			const result = results(await allEntries(opened.root))[0]!;
 			expect(result.nestedCalls).toMatchObject({
 				complete: replay === "safe",
