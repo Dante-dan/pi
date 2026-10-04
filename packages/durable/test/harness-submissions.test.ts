@@ -106,6 +106,75 @@ describe("submissions", () => {
 		await harness.close(context);
 	});
 
+	// #10407: custom application entries use the same atomic input admission as pi.user.
+	it("admits custom input with its payload, projection, deduplication and busy rejection", async () => {
+		const Event = defineEntry<{ source: string }>("app.input");
+		const storage = new ControlledStorage();
+		const setup = chatSetup();
+		setup.now = () => 42;
+		const busy = unanswered();
+		setup.faux.setResponses([busy.step]);
+		const { harness, root } = await openChat(storage, setup);
+		const first = await root.submit(
+			{ type: "input", kind: Event.kind, data: { source: "webhook" }, content: "hello", requestId: "custom" },
+			context,
+		);
+		await busy.reached;
+		const record = await first.status(context);
+		if (record.status !== "placed") throw new Error(`Unexpected ${record.status}`);
+		const entry = await root.commit((tx) => tx.entry(Event, record.entry), context);
+		expect(entry).toMatchObject({ kind: Event.kind, data: { source: "webhook" }, conversationId: root.id });
+		expect(entry?.model).toEqual([{ role: "user", content: "hello", timestamp: 42 }]);
+		expect((await harness.snapshot(LiveDoc, root.id, context))?.run?.inputs).toEqual([first.id]);
+		const commits = storage.commits.length;
+		const retry = await root.submit(
+			{ type: "input", kind: "another", data: null, content: "ignored", requestId: "custom", whenBusy: "reject" },
+			context,
+		);
+		expect(retry.id).toBe(first.id);
+		await expect(root.submit({ type: "input", kind: Event.kind, data: { source: "rejected" }, content: "no", whenBusy: "reject" }, context)).rejects.toBeInstanceOf(ConversationBusy);
+		expect(storage.commits).toHaveLength(commits);
+		expect((await allEntries(root)).filter((value) => Event.is(value))).toHaveLength(1);
+		await harness.close(context);
+	});
+
+	// #10407: queue payload survives a durable close/reopen, rather than a process-local side channel.
+	it.each(["steer", "followUp"] as const)("recovers and settles queued custom %s input", async (whenBusy) => {
+		const path = await sqlitePath();
+		const setup = chatSetup();
+		const busy = unanswered();
+		setup.faux.setResponses([busy.step, fauxAssistantMessage("resumed answer"), fauxAssistantMessage("custom answer")]);
+		let opened = await openChat(await openNodeSqliteStorage(path), setup);
+		await opened.root.submit({ type: "input", content: "first" }, context);
+		await busy.reached;
+		const queued = await opened.root.submit({ type: "input", kind: "app.event", data: { source: whenBusy, nested: [1, null] }, content: "custom", whenBusy, requestId: "queued" }, context);
+		expect((await queued.status(context)).status).toBe("queued");
+		await opened.harness.close(context);
+		opened = await openChat(await openNodeSqliteStorage(path), setup);
+		const recovered = (await opened.harness.submission(queued.id, context))!;
+		const settled = await recovered.wait(context);
+		expect(settled).toMatchObject({ id: queued.id, type: "input", status: "done", requestId: "queued" });
+		if (settled.status !== "done" || settled.type !== "input") throw new Error(`Unexpected ${settled.status}`);
+		const entries = await allEntries(opened.root);
+		expect(entries.filter((entry) => entry.kind === "app.event")).toEqual([expect.objectContaining({ id: settled.entry, data: { source: whenBusy, nested: [1, null] }, model: [expect.objectContaining({ role: "user", content: "custom" })] })]);
+		expect((await opened.root.context(context)).messages.some((message) => message.role === "user" && message.content === "custom")).toBe(true);
+		const retry = await opened.root.submit({ type: "input", content: "retry", requestId: "queued" }, context);
+		expect(retry.id).toBe(queued.id);
+		expect((await recovered.status(context)).status).toBe("done");
+		await opened.harness.close(context);
+	});
+
+	it("rejects an empty custom kind atomically before starting an idle run", async () => {
+		const storage = new ControlledStorage();
+		const { harness, root } = await openChat(storage, chatSetup());
+		const commits = storage.commits.length;
+		await expect(root.submit({ type: "input", kind: "", content: "no" }, context)).rejects.toThrow("Entry kind must be a non-empty string");
+		expect(storage.commits).toHaveLength(commits);
+		expect(await allEntries(root)).toEqual([]);
+		expect(await harness.snapshot(LiveDoc, root.id, context)).toEqual({});
+		await harness.close(context);
+	});
+
 	it("reports abort results and looks submissions up by conversation", async () => {
 		const setup = chatSetup();
 		const release = deferred();

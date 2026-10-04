@@ -6,7 +6,13 @@ import type { QueueMode, Settings, UserInput } from "./types.ts";
 
 /** A queued submission: user input for a run, or a passive entry write. */
 export type InboxItem =
-	| { id: SubmissionId; mode: "steer" | "followUp"; content: JsonRepresentation<UserInput> }
+	| {
+			id: SubmissionId;
+			mode: "steer" | "followUp";
+			content: JsonRepresentation<UserInput>;
+			kind?: string;
+			data?: JsonValue;
+	  }
 	/** `entry` is an `EntryDraft`, stored as plain JSON. */
 	| { id: SubmissionId; mode: "write"; entry: JsonObject };
 
@@ -96,7 +102,11 @@ export async function applyBoundary(
 	for (const index of users) {
 		const item = items[index] as Draft<Extract<InboxItem, { mode: "steer" | "followUp" }>>;
 		const message = { role: "user", content: item.content as UserInput, timestamp: now } as const;
-		const entry = await tx.appendEntry(UserEntry, conversationId, { model: [message] });
+		const entry = await tx.appendEntry(conversationId, {
+			kind: item.kind ?? UserEntry.kind,
+			...(item.data === undefined ? {} : { data: item.data }),
+			model: [message],
+		});
 		tx.placeSubmission(item.id, entry.id);
 		placed.push(item.id);
 	}

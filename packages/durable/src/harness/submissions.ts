@@ -161,6 +161,13 @@ export async function admitSubmission(
 			return existing.id;
 		}
 	}
+	if (
+		draft.type === "input" &&
+		draft.kind !== undefined &&
+		(typeof draft.kind !== "string" || draft.kind.length === 0)
+	) {
+		throw new TypeError("Entry kind must be a non-empty string");
+	}
 	const live = await tx.doc(LiveDoc, conversationId);
 	const busy = live.run !== undefined;
 	if (busy && draft.type === "input" && draft.whenBusy === "reject") throw new ConversationBusy(conversationId);
@@ -182,7 +189,13 @@ export async function admitSubmission(
 		if (draft.type === "write") items.push({ id, mode: "write", entry: value as JsonObject });
 		else {
 			const mode = draft.whenBusy === "steer" ? "steer" : "followUp";
-			items.push({ id, mode, content: value as JsonRepresentation<UserInput> });
+			items.push({
+				id,
+				mode,
+				content: value as JsonRepresentation<UserInput>,
+				...(draft.kind === undefined ? {} : { kind: draft.kind }),
+				...(draft.data === undefined ? {} : { data: copyJson(draft.data, { omitUndefinedProperties: true }) }),
+			});
 		}
 		if (boundary === undefined) return id;
 		const { users } = await applyBoundary(tx, boundary, "final", now);
@@ -199,7 +212,11 @@ export async function admitSubmission(
 		return (await tx.createSubmission(write)).id;
 	}
 	const message = { role: "user", content: draft.content, timestamp: now } as const;
-	const entry = await tx.appendEntry(UserEntry, conversationId, { model: [message] });
+	const entry = await tx.appendEntry(conversationId, {
+		kind: draft.kind ?? UserEntry.kind,
+		...(draft.data === undefined ? {} : { data: draft.data }),
+		model: [message],
+	});
 	const input = { conversationId, ...requestId, type: "input", status: "placed", entry: entry.id } as const;
 	const { id } = await tx.createSubmission(input);
 	await startRun(tx, conversationId, live, [id]);

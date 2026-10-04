@@ -58,6 +58,10 @@ export type SubmissionDraft = {
 	| {
 			readonly type: "input";
 			readonly content: UserInput;
+			/** Entry kind for the admitted user message; omitted: pi.user. */
+			readonly kind?: string;
+			/** Application payload retained alongside the user-message projection. */
+			readonly data?: JsonValue;
 			readonly whenBusy?: "steer" | "followUp" | "reject";
 			readonly entry?: never;
 	  }
