@@ -167,8 +167,10 @@ export type QueueMode = "all" | "one-at-a-time";
  * the invocation ends.
  */
 export interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extends DocumentObserver, DocumentReader {
+	/** Durable owner task; nested invocations share it. Use callId for per-call state. */
 	readonly taskId: TaskId;
 	readonly conversationId: ConversationId;
+	/** Invocation identity, distinct for repeated nested calls within the same owner task. */
 	readonly callId: string;
 	/** Present on a nested invocation. Task ownership remains with the model-issued call. */
 	readonly parentCallId?: string;
