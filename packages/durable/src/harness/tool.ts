@@ -1,7 +1,15 @@
-import { type Context, copyJson, type JsonValue } from "@earendil-works/chord";
-import { awaitWithContext } from "@earendil-works/chord/context";
+import { type Context, copyJson, type JsonRepresentation, type JsonValue } from "@earendil-works/chord";
+import { awaitWithContext, withAbortSignal } from "@earendil-works/chord/context";
 import { overlap } from "@earendil-works/chord/delta";
-import type { ImageContent, TextContent, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
+import type {
+	ImageContent,
+	NestedToolCallRecord,
+	NestedToolCalls,
+	TextContent,
+	ToolCall,
+	ToolResultMessage,
+	Usage,
+} from "@earendil-works/pi-ai";
 import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import { AssistantEntry, ToolResultEntry } from "../entries.ts";
 import { defineTask } from "../tasks.ts";
@@ -28,7 +36,7 @@ import type {
 	ToolHooks,
 	ToolRegistration,
 } from "./types.ts";
-import { recordUsage } from "./usage.ts";
+import { addUsage, recordUsage } from "./usage.ts";
 
 export type ToolTaskInput = { assistant: EntryId; callId: string };
 
@@ -40,6 +48,13 @@ export type ToolTaskCheckpoint =
 export type ToolTaskResult = { entryId: EntryId; control?: ToolControl };
 
 type Runtime = TaskRuntime<ToolTaskInput, ToolTaskCheckpoint, ToolTaskResult, ToolHooks>;
+type InvocationCall = ToolCall & { readonly parentCallId?: string };
+type NestedScope = {
+	readonly calls: NestedCalls;
+	readonly controller: AbortController;
+	readonly progress: () => void;
+	queue: Promise<void>;
+};
 type Content = (TextContent | ImageContent)[];
 
 /**
@@ -102,7 +117,8 @@ export const ToolTask = defineTask<ToolTaskInput, ToolTaskCheckpoint, ToolTaskRe
 					if (slot !== undefined) clearProgress(slot);
 					return undefined;
 				}, context);
-				return run(runtime, call, tool, args, context);
+				await run(runtime, call, tool, args, context);
+				return;
 			}
 			const message = `Tool ${call.name} was interrupted and may have partially run`;
 			// `failed` records cancellation intent, so the call's owned conversations, left unsupervised, are aborted.
@@ -163,31 +179,147 @@ type Reported = {
 	readonly limits: OutputLimits;
 	readonly diagnostics: ToolDiagnostic[];
 	details: JsonValue | undefined;
+	nestedCalls?: NestedCalls;
 };
 
 /** Execute with the resolved implementation, then settle its result. */
 async function run(
 	runtime: Runtime,
-	call: ToolCall,
+	call: InvocationCall,
 	tool: ToolRegistration,
 	args: JsonObject,
 	context: Context,
-): Promise<void> {
+	nested?: { scope: NestedScope; holdsQueue: boolean; onUpdate?: (result: ToolExecutionResult) => void },
+): Promise<ToolExecutionResult> {
 	const limits: OutputLimits = {
 		maxBytes: tool.outputLimits?.maxBytes ?? DEFAULT_MAX_BYTES,
 		maxLines: tool.outputLimits?.maxLines ?? DEFAULT_MAX_LINES,
 		retain: tool.outputLimits?.retain ?? "head",
 	};
 	const reported: Reported = { output: new OutputBuffer(limits), limits, diagnostics: [], details: undefined };
-	const progress = publishProgress(runtime, reported, context);
+	const progress =
+		nested === undefined
+			? publishProgress(runtime, reported, context)
+			: new Progress(
+					async () => {
+						nested.onUpdate?.({
+							content: [{ type: "text", text: reported.output.snapshot().text }],
+							details: reported.details,
+							diagnostics: [...reported.diagnostics],
+						});
+						return 0;
+					},
+					(error) => runtime.report(error),
+				);
+	const scope = nested?.scope ?? {
+		calls: new NestedCalls(),
+		controller: new AbortController(),
+		progress: () => progress.mark(),
+		queue: Promise.resolve(),
+	};
+	if (nested === undefined) reported.nestedCalls = scope.calls;
+	const invocationController = new AbortController();
+	let nextId = 0;
 	let ended = false;
 	const assertLive = (): void => {
 		if (ended) throw new Error(`Tool call ${call.id} has settled`);
+		context.abortSignal?.throwIfAborted();
+		runtime.signal.throwIfAborted();
 	};
+	function memo<T extends JsonValue>(name: string, memoContext: Context): Promise<T | undefined>;
+	function memo<T extends JsonValue>(name: string, candidate: T, memoContext: Context): Promise<T>;
+	function memo<T extends JsonValue>(
+		name: string,
+		candidate: T | Context,
+		memoContext?: Context,
+	): Promise<T | undefined> {
+		assertLive();
+		return memoContext === undefined
+			? runtime.memo<T>(name, candidate as Context)
+			: runtime.memo(name, candidate as T, memoContext);
+	}
 	const api: Omit<ToolExecutionApi, "env"> = {
 		taskId: runtime.taskId,
 		conversationId: runtime.conversationId,
 		callId: call.id,
+		...(call.parentCallId === undefined ? {} : { parentCallId: call.parentCallId }),
+		executeTool: async (name, candidate, callerContext, options) => {
+			assertLive();
+			const childContext = withAbortSignal(
+				invocationController.signal,
+				withAbortSignal(
+					scope.controller.signal,
+					withAbortSignal(runtime.signal, withAbortSignal(context.abortSignal ?? runtime.signal, callerContext)),
+				),
+			);
+			childContext.abortSignal?.throwIfAborted();
+			const child: InvocationCall = {
+				type: "toolCall",
+				id: `${call.id}/${++nextId}`,
+				name,
+				arguments: copyJson(candidate) as JsonObject,
+				parentCallId: call.id,
+			};
+			const childRuntime = scopedRuntime(runtime, child.id);
+			const record = scope.calls.start(child);
+			scope.progress();
+			let release: (() => void) | undefined;
+			let outcome: ToolExecutionResult;
+			try {
+				const selected = (await runtime.agent(childContext)).tools.find((each) => each.name === name);
+				const exclusive =
+					!nested?.holdsQueue &&
+					(runtime.settings.toolExecution === "sequential" || selected?.executionMode === "sequential");
+				if (exclusive) {
+					const previous = scope.queue;
+					const gate = new Promise<void>((resolve) => {
+						release = resolve;
+					});
+					scope.queue = previous.then(() => gate);
+					await awaitWithContext(previous, childContext);
+				}
+				assertLive();
+				if (selected === undefined) outcome = harnessError("tool_unavailable", `Tool ${name} is not available`);
+				else {
+					const prepared = prepare(selected, child.arguments as JsonObject);
+					const checked = "error" in prepared ? prepared : validate(selected, child, prepared.args);
+					if ("error" in checked) outcome = invalid(checked.error);
+					else {
+						let final = checked.args;
+						let block: string | undefined;
+						await runtime.hooks.each("beforeTool", async (hook) => {
+							if (block !== undefined) return;
+							try {
+								const decision = await hook({ ...child, arguments: final }, childRuntime, childContext);
+								if (decision?.block !== undefined) block = decision.block;
+								else if (decision?.arguments !== undefined) final = decision.arguments;
+							} catch (error) {
+								block = errorText(error);
+							}
+						});
+						const validated = validate(selected, child, final);
+						if (block !== undefined) outcome = harnessError("blocked", `Tool call blocked: ${block}`);
+						else if ("error" in validated) outcome = invalid(validated.error);
+						else {
+							outcome = await run(childRuntime, child, selected, validated.args, childContext, {
+								scope,
+								holdsQueue: nested?.holdsQueue === true || exclusive,
+								onUpdate: options?.onUpdate,
+							});
+						}
+					}
+				}
+			} catch (error) {
+				outcome = harnessError("tool_error", errorText(error));
+			} finally {
+				release?.();
+			}
+			if (!ended && !scope.controller.signal.aborted) {
+				scope.calls.finish(record, outcome);
+				scope.progress();
+			}
+			return outcome;
+		},
 		registry: runtime.registry,
 		agent: runtime.agent,
 		output: (chunk) => {
@@ -209,6 +341,7 @@ async function run(
 			return awaitWithContext(committed, detailsContext);
 		},
 		commit: async (change, commitContext) => {
+			assertLive();
 			let result: Awaited<ReturnType<typeof change>> | undefined;
 			await runtime.commit(async (tx) => {
 				result = await change(tx);
@@ -216,13 +349,14 @@ async function run(
 			}, commitContext);
 			return result as Awaited<ReturnType<typeof change>>;
 		},
-		memo: runtime.memo,
+		memo,
 		createTask: async <I, S extends { phase: string }, R, H extends object>(
 			task: Task<I, S, R, H>,
 			input: I,
 			options: Omit<TaskOptions, "conversationId">,
 			taskContext: Context,
 		): Promise<TaskId<R>> => {
+			assertLive();
 			let id: TaskId<R> | undefined;
 			await runtime.commit(async (tx) => {
 				id = await tx.createTask(task, input, options);
@@ -243,7 +377,7 @@ async function run(
 	try {
 		// Built for this call, so a rerun after recovery gets the conversation's environment at that time.
 		const env = await runtime.env(context);
-		result = await tool.execute(args, { ...api, env }, context);
+		result = await awaitWithContext(tool.execute(args, { ...api, env }, context), context);
 	} catch (error) {
 		if (runtime.signal.aborted) {
 			ended = true;
@@ -256,17 +390,29 @@ async function run(
 		ending = { status: "failed", message: `Tool ${call.name} threw` };
 	}
 	ended = true;
+	invocationController.abort(new Error(`Tool call ${call.id} has settled`));
+	if (nested === undefined) scope.controller.abort(new Error(`Tool call ${call.id} has settled`));
 	reported.output.end();
 	// Details still waiting for a progress commit settle with the terminal commit, the final flush.
 	const pending = await progress.stop();
 	try {
-		const settled = await finalResult(runtime, call, result, reported, context);
-		await settle(runtime, call, ending, () => settled, context);
+		let settled = await finalResult(runtime, call, result, reported, context);
+		if (nested === undefined) {
+			const usage = scope.calls.usage;
+			if (usage !== undefined) {
+				const total = settled.usage === undefined ? structuredClone(usage) : structuredClone(settled.usage);
+				if (settled.usage !== undefined) addUsage(total, usage);
+				settled = { ...settled, usage: total };
+			}
+			settled = { ...settled, nestedCalls: scope.calls.snapshot() };
+			await settle(runtime, call, ending, () => settled, context);
+		}
+		for (const waiter of pending) waiter.resolve();
+		return settled;
 	} catch (error) {
 		for (const waiter of pending) waiter.reject(error);
 		throw error;
 	}
-	for (const waiter of pending) waiter.resolve();
 }
 
 /**
@@ -282,6 +428,7 @@ function publishProgress(runtime: Runtime, reported: Reported, context: Context)
 			const current = { text: snapshot.text, details: reported.details, diagnostics: reported.diagnostics.length };
 			const added = reported.diagnostics.slice(written.diagnostics, current.diagnostics);
 			const detailsChanged = current.details !== written.details;
+			const nestedCalls = reported.nestedCalls?.snapshot();
 			// What the commit writes, as Chord diffs the string: an append, a trim plus an append of what follows the shared
 			// part, or the whole window when its bounded overlap search finds nothing.
 			let bytes = 0;
@@ -296,6 +443,7 @@ function publishProgress(runtime: Runtime, reported: Reported, context: Context)
 			await runtime.commit(async (tx) => {
 				const slot = toolSlot(await tx.doc(LiveDoc, runtime.conversationId), runtime.taskId);
 				if (slot === undefined) return undefined;
+				if (nestedCalls !== undefined) slot.nestedCalls = nestedCalls as JsonRepresentation<NestedToolCalls>;
 				// REMINDER: assign `output` as one string field. Chord then diffs it into an append, or a trim plus an
 				// append for a sliding tail; replacing the slot object would record the whole window on every commit.
 				if ((slot.output ?? "") !== snapshot.text) slot.output = snapshot.text;
@@ -328,7 +476,7 @@ function publishProgress(runtime: Runtime, reported: Reported, context: Context)
  */
 async function finalResult(
 	runtime: Runtime,
-	call: ToolCall,
+	call: InvocationCall,
 	result: ToolExecutionResult,
 	reported: Reported,
 	context: Context,
@@ -405,6 +553,7 @@ function fromSlot(slot: Readonly<ToolSlot> | undefined, code: string, message: s
 		content: slot?.output === undefined || slot.output === "" ? [] : [{ type: "text", text: slot.output }],
 		isError: true,
 		...(slot?.details === undefined ? {} : { details: slot.details }),
+		...(slot?.nestedCalls === undefined ? {} : { nestedCalls: slot.nestedCalls }),
 		diagnostics,
 	};
 }
@@ -452,6 +601,7 @@ export async function appendToolResult(
 		content,
 		...(result.details === undefined ? {} : { details: result.details }),
 		...(result.usage === undefined ? {} : { usage: result.usage }),
+		...(result.nestedCalls === undefined ? {} : { nestedCalls: result.nestedCalls }),
 		isError: result.isError ?? false,
 		timestamp,
 	} as ToolResultMessage;
@@ -483,6 +633,69 @@ function boundContent(
 	return { content: result, droppedBytes: bounded.droppedBytes, droppedLines: bounded.droppedLines };
 }
 
+/** Namespace approval memos as well as tool memos; one parent's permission is not a child's approval. */
+function scopedRuntime(runtime: Runtime, id: string): Runtime {
+	function memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
+	function memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
+	function memo<T extends JsonValue>(name: string, candidate: T | Context, context?: Context): Promise<T | undefined> {
+		const key = `nested:${id}:${name}`;
+		return context === undefined
+			? runtime.memo<T>(key, candidate as Context)
+			: runtime.memo(key, candidate as T, context);
+	}
+	return { ...runtime, memo };
+}
+
 function errorText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/** One parent invocation's bounded metadata; output belongs only to the nested caller. */
+class NestedCalls {
+	readonly #calls: NestedToolCallRecord[] = [];
+	#complete = true;
+	#argumentBytes = 0;
+	usage: Usage | undefined;
+
+	start(call: ToolCall): { record: NestedToolCallRecord; started: number } | undefined {
+		if (this.#calls.length >= 256) {
+			this.#complete = false;
+			return undefined;
+		}
+		const record: NestedToolCallRecord = { id: call.id, name: call.name, status: "unfinished" };
+		const json = JSON.stringify(call.arguments);
+		const bytes = utf8ByteLength(json);
+		if (bytes > 8 * 1024 || this.#argumentBytes + bytes > 32 * 1024) {
+			record.argumentsBytes = bytes;
+			this.#complete = false;
+		} else {
+			record.arguments = JSON.parse(json);
+			this.#argumentBytes += bytes;
+		}
+		this.#calls.push(record);
+		return { record, started: performance.now() };
+	}
+
+	finish(start: ReturnType<NestedCalls["start"]>, result: ToolExecutionResult): void {
+		if (start !== undefined) {
+			start.record.status = result.isError ? "error" : "ok";
+			start.record.durationMs = Math.round(performance.now() - start.started);
+			if (result.isError) {
+				const error = (result.diagnostics ?? []).map((item) => item.message).join("\n");
+				if (error !== "") start.record.error = error.slice(0, 500);
+			}
+		}
+		if (result.usage !== undefined) {
+			if (this.usage === undefined) this.usage = structuredClone(result.usage);
+			else addUsage(this.usage, result.usage);
+		}
+	}
+
+	snapshot(): NestedToolCalls | undefined {
+		if (this.#calls.length === 0 && this.#complete) return undefined;
+		return {
+			calls: structuredClone(this.#calls),
+			complete: this.#complete && this.#calls.every((call) => call.status !== "unfinished"),
+		};
+	}
 }
