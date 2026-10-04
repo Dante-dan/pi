@@ -210,6 +210,7 @@ async function run(
 						return 0;
 					},
 					(error) => runtime.report(error),
+					runtime.settings.progress.outputIntervalMs,
 				);
 	const scope = nested?.scope ?? {
 		calls: new NestedCalls(),
