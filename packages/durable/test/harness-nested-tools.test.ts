@@ -11,6 +11,47 @@ const parameters = Type.Object({ text: Type.Optional(Type.String()) });
 // https://github.com/earendil-works/pi/issues/10455
 // Nested calls must keep the parent's protocol identity and output separate.
 describe("nested tool execution", () => {
+	// https://github.com/earendil-works/pi/issues/10455
+	it("keeps the current shell output window scoped to a tail-retaining child", async () => {
+		const setup = chatSetup();
+		addTool(
+			setup.registry,
+			defineTool({
+				name: "child",
+				description: "Child",
+				parameters,
+				outputLimits: { maxBytes: 3, retain: "tail" },
+				execute: async (_args, api) => {
+					expect(api.outputWindow).toMatchObject({ maxBytes: 3, minIntervalMs: expect.any(Number) });
+					api.output("abcdef", { bytes: 6, newlines: 0, endsWithNewline: false });
+					return {};
+				},
+			}),
+		);
+		addTool(
+			setup.registry,
+			defineTool({
+				name: "parent",
+				description: "Parent",
+				parameters,
+				execute: async (_args, api, callContext) => {
+					expect(api.outputWindow).toBeUndefined();
+					const child = await api.executeTool("child", {}, callContext);
+					expect(child.content).toEqual([{ type: "text", text: "def" }]);
+					expect(child.diagnostics?.[0]?.message).toContain("9 bytes dropped");
+					return {};
+				},
+			}),
+		);
+		setup.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("parent", {}, { id: "p" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("done")]),
+		]);
+		const { harness, root } = await openChat(new MemoryStorage(), setup);
+		await (await root.submit({ type: "input", content: "go" }, context)).wait(context);
+		await harness.close(context);
+	});
+
 	// https://github.com/earendil-works/pi/issues/10455#issuecomment-5984851470
 	it("isolates repeated calls by callId even when they share a durable task", async () => {
 		const setup = chatSetup();
