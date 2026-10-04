@@ -177,6 +177,27 @@ const Timing = defineExtension({
 });
 ```
 
+### Nested calls
+
+A tool can call another selected tool through `api.executeTool(name, args, context, { onUpdate })`.
+The child receives its own `callId` and `parentCallId`, argument preparation and validation,
+`beforeTool`/`afterTool` hooks, environment, output limits, details and diagnostics. Approval and
+execution memos are scoped to its call ID. Its result is returned to the caller; it does not
+append a separate protocol message or apply its `control` to the conversation.
+
+Nested metadata appears under the parent's `pi.live.tools` slot and on its final result as
+`nestedCalls`. The record retains at most 256 calls, 8 KiB of arguments per call and 32 KiB total;
+errors retain 500 characters. Dropping records or arguments makes `complete` false. Nested
+usage is summed once into the parent result and its usage bucket, including dropped records.
+Child output is available through `onUpdate` and the returned result, and never replaces the
+parent's output.
+
+Sequential nested calls share a queue within the parent; descendants of a call holding that
+queue can run without reacquiring it. Parent cancellation and return cancel unfinished nested
+work. After interruption, committed nested records stay `unfinished`; nested calls have no
+independent replay or result checkpoints. Only a `replay: "safe"` parent may rerun them, so its
+author must ensure that repeating its complete execution, including nested effects, is safe.
+
 ## System Prompt
 
 The system prompt is built from the selected extensions' sections, rendered in order before each request. A section sees the resolved agent, the environment built for the request, and committed documents:

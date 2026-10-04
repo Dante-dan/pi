@@ -5,6 +5,7 @@ import type {
 	Message,
 	Models,
 	ModelThinkingLevel,
+	NestedToolCalls,
 	Static,
 	Tool,
 	ToolCall,
@@ -151,6 +152,8 @@ export type ToolExecutionResult<TDetails extends JsonValue = JsonValue> = {
 	/** Spend of the execution itself, such as a model call; stored on the result and in `pi.usage.tools`. */
 	readonly usage?: Usage;
 	readonly control?: ToolControl;
+	/** Bounded record of calls made through executeTool(); not sent to the model. */
+	readonly nestedCalls?: NestedToolCalls;
 };
 
 /** Whether the tools of one round run at once or one after another in call order. */
@@ -167,6 +170,15 @@ export interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extend
 	readonly taskId: TaskId;
 	readonly conversationId: ConversationId;
 	readonly callId: string;
+	/** Present on a nested invocation. Task ownership remains with the model-issued call. */
+	readonly parentCallId?: string;
+	/** Run a selected tool with its own validation, hooks and bounded output. */
+	executeTool(
+		name: string,
+		args: JsonObject,
+		context: Context,
+		options?: { readonly onUpdate?: (result: ToolExecutionResult) => void },
+	): Promise<ToolExecutionResult>;
 	/** The tool task's phase snapshot. */
 	readonly registry: RegistrySnapshot;
 	/** The calling conversation's agent, as the tool task's phase resolved it. */
@@ -609,13 +621,13 @@ export interface GenerationHooks {
 export interface ToolHooks {
 	/** Before intent; the first `block` wins, otherwise `arguments` replace the call's arguments. A throw blocks. */
 	beforeTool(
-		call: ToolCall,
+		call: ToolCall & { readonly parentCallId?: string },
 		api: HookApi,
 		context: Context,
 	): HookResult<{ readonly arguments?: JsonObject; readonly block?: string }>;
 	/** After execution, before the result entry; replaces the result. */
 	afterTool(
-		call: ToolCall,
+		call: ToolCall & { readonly parentCallId?: string },
 		result: ToolExecutionResult,
 		api: HookApi,
 		context: Context,
