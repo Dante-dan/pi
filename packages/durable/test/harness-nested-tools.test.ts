@@ -11,6 +11,57 @@ const parameters = Type.Object({ text: Type.Optional(Type.String()) });
 // https://github.com/earendil-works/pi/issues/10455
 // Nested calls must keep the parent's protocol identity and output separate.
 describe("nested tool execution", () => {
+	// https://github.com/earendil-works/pi/issues/10455#issuecomment-5984851470
+	it("isolates repeated calls by callId even when they share a durable task", async () => {
+		const setup = chatSetup();
+		const calls: { taskId: number; callId: string; parentCallId: string | undefined; memo: string }[] = [];
+		addTool(
+			setup.registry,
+			defineTool({
+				name: "child",
+				description: "Child",
+				parameters,
+				execute: async (_args, api, callContext) => {
+					calls.push({
+						taskId: api.taskId,
+						callId: api.callId,
+						parentCallId: api.parentCallId,
+						memo: await api.memo("pending-question", api.callId, callContext),
+					});
+					return {};
+				},
+			}),
+		);
+		addTool(
+			setup.registry,
+			defineTool({
+				name: "parent",
+				description: "Parent",
+				parameters,
+				execute: async (_args, api, callContext) => {
+					await Promise.all([
+						api.executeTool("child", {}, callContext),
+						api.executeTool("child", {}, callContext),
+					]);
+					return {};
+				},
+			}),
+		);
+		setup.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("parent", {}, { id: "p" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("done")]),
+		]);
+		const { harness, root } = await openChat(new MemoryStorage(), setup);
+		await (await root.submit({ type: "input", content: "go" }, context)).wait(context);
+		expect(new Set(calls.map((call) => call.taskId)).size).toBe(1);
+		expect(calls.map((call) => call.callId).sort()).toEqual(["p/1", "p/2"]);
+		for (const call of calls) {
+			expect(call.parentCallId).toBe("p");
+			expect(call.memo).toBe(call.callId);
+		}
+		await harness.close(context);
+	});
+
 	it("prepares, validates and runs hooks with an independent call id and bounded output", async () => {
 		const setup = chatSetup();
 		const seen: unknown[] = [];

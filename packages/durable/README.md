@@ -185,6 +185,12 @@ The child receives its own `callId` and `parentCallId`, argument preparation and
 execution memos are scoped to its call ID. Its result is returned to the caller; it does not
 append a separate protocol message or apply its `control` to the conversation.
 
+Use `(api.taskId, api.callId)` to key durable per-invocation state, such as a pending question
+or delegated conversation. Nested calls share the parent's owner task, but repeated calls get
+distinct IDs (`p/1`, `p/2`); descendants extend their caller's ID. Replaying the same call order
+reuses those IDs. A safe parent must therefore preserve its call order when using persisted
+per-call state.
+
 Nested metadata appears under the parent's `pi.live.tools` slot and on its final result as
 `nestedCalls`. The record retains at most 256 calls, 8 KiB of arguments per call and 32 KiB total;
 errors retain 500 characters. Dropping records or arguments makes `complete` false. Nested
