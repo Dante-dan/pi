@@ -14,7 +14,7 @@ import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 
 export default function (pi: ExtensionAPI) {
-	let pending: { toolCallId: string; summary: string; usage: Usage } | undefined;
+	let pending: { toolCallId: string; sourceLeaf: string | null; summary: string; usage: Usage } | undefined;
 	let summarizing = false;
 
 	pi.on("session_start", () => {
@@ -36,6 +36,7 @@ export default function (pi: ExtensionAPI) {
 			signal?.throwIfAborted();
 			summarizing = true;
 			try {
+				const sourceLeaf = ctx.sessionManager.getLeafId();
 				const conversation = serializeConversation(
 					convertToLlm(ctx.sessionManager.buildSessionProjection().messages),
 				);
@@ -67,7 +68,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				const summary = response.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 				if (!summary.trim()) throw new Error("Compaction summary was empty");
-				pending = { toolCallId, summary, usage: response.usage };
+				pending = { toolCallId, sourceLeaf, summary, usage: response.usage };
 				return {
 					content: [
 						{ type: "text", text: "Summary prepared; compaction will commit after this tool turn finishes." },
@@ -91,6 +92,11 @@ export default function (pi: ExtensionAPI) {
 		const handoff = pending;
 		pending = undefined;
 		if (!handoff || event.outcome !== "completed" || ctx.signal?.aborted) return;
+		const branch = ctx.sessionManager.getBranch();
+		const snapshotIndex = branch.findIndex((entry) => entry.id === handoff.sourceLeaf);
+		if (snapshotIndex < 0 || event.entries.length > 0) return;
+		const appended = branch.slice(snapshotIndex + 1);
+		if (appended.length !== 1 || appended[0].id !== event.toolResultEntryIds[0]) return;
 		// Other tools may have changed state after the summary snapshot. Keep the
 		// original context rather than discard results absent from the summary.
 		if (
