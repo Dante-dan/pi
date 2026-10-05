@@ -8,6 +8,14 @@ const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
+interface ThinkingRun {
+	index: number;
+	container: Container;
+	hidden: Text;
+	createVisible: () => Markdown;
+	visible?: Markdown;
+}
+
 /**
  * Component that renders a complete assistant message
  */
@@ -22,6 +30,7 @@ export class AssistantMessageComponent extends Container {
 	private hasToolCalls = false;
 	private isStreaming = false;
 	private thinkingVisibilityOverrides = new Map<number, boolean>();
+	private thinkingRuns: ThinkingRun[] = [];
 
 	constructor(
 		message?: AssistantMessage,
@@ -58,9 +67,20 @@ export class AssistantMessageComponent extends Container {
 	setHideThinkingBlock(hide: boolean): void {
 		this.hideThinkingBlock = hide;
 		this.thinkingVisibilityOverrides.clear();
-		if (this.lastMessage) {
-			this.updateContent(this.lastMessage);
+		for (const run of this.thinkingRuns) {
+			this.updateThinkingVisibility(run);
 		}
+	}
+
+	private updateThinkingVisibility(run: ThinkingRun): void {
+		const hidden = this.thinkingVisibilityOverrides.get(run.index) ?? this.hideThinkingBlock;
+		run.container.clear();
+		if (hidden) {
+			run.container.addChild(run.hidden);
+			return;
+		}
+		run.visible ??= run.createVisible();
+		run.container.addChild(run.visible);
 	}
 
 	setHiddenThinkingLabel(label: string): void {
@@ -94,6 +114,7 @@ export class AssistantMessageComponent extends Container {
 
 		// Clear content container
 		this.contentContainer.clear();
+		this.thinkingRuns = [];
 
 		const hasVisibleContent = message.content.some(
 			(c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
@@ -140,10 +161,14 @@ export class AssistantMessageComponent extends Container {
 					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
 
 				const runIndex = thinkingRunIndex++;
-				const hidden = this.thinkingVisibilityOverrides.get(runIndex) ?? this.hideThinkingBlock;
-				const thinkingComponent = hidden
-					? new Text(theme.italic(theme.fg("thinkingText", this.hiddenThinkingLabel)), this.outputPad, 0)
-					: new Markdown(
+				// Visibility changes keep Markdown instances and their render/token caches intact.
+				// Hidden runs do not parse Markdown until they are first rendered.
+				const run: ThinkingRun = {
+					index: runIndex,
+					container: new Container(),
+					hidden: new Text(theme.italic(theme.fg("thinkingText", this.hiddenThinkingLabel)), this.outputPad, 0),
+					createVisible: () =>
+						new Markdown(
 							thinkingBlocks.join("\n\n"),
 							this.outputPad,
 							0,
@@ -159,12 +184,16 @@ export class AssistantMessageComponent extends Container {
 									this.markdownTransformers,
 								),
 							},
-						);
+						),
+				};
+				this.thinkingRuns.push(run);
+				this.updateThinkingVisibility(run);
 				this.contentContainer.addChild(
-					new MouseRegion(thinkingComponent, (event) => {
+					new MouseRegion(run.container, (event) => {
 						if (event.type !== "click" || event.button !== "left") return undefined;
+						const hidden = this.thinkingVisibilityOverrides.get(runIndex) ?? this.hideThinkingBlock;
 						this.thinkingVisibilityOverrides.set(runIndex, !hidden);
-						if (this.lastMessage) this.updateContent(this.lastMessage);
+						this.updateThinkingVisibility(run);
 						return { handled: true };
 					}),
 				);
