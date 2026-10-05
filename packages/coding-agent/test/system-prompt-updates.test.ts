@@ -8,6 +8,7 @@ import {
 	getCurrentSystemMessage,
 	getCurrentSystemPrompt,
 	getSystemMessageText,
+	resolveTranscriptTools,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
@@ -21,6 +22,7 @@ import {
 	buildSystemPromptState,
 	diffSystemPromptSections,
 } from "../src/core/system-prompt.ts";
+import { createToolSearchExtension } from "../src/extensions/tool-search/index.ts";
 import type { ExtensionFactory } from "../src/index.ts";
 import { createHarness } from "./suite/harness.ts";
 
@@ -166,6 +168,79 @@ describe("system prompt updates", () => {
 			harness.cleanup();
 		}
 	});
+
+	// Regression #10489: forced text must not hoist discovered tools into the request head.
+	test.each(["systemPrompt", "forceSystemPrompt"] as const)(
+		"%s preserves tool_search additions and removals",
+		async (mode) => {
+			const harness = await createHarness({
+				initialActiveToolNames: ["tool_search"],
+				extensionFactories: [
+					createToolSearchExtension(),
+					(pi) => {
+						pi.registerTool({
+							name: "search_docs",
+							label: "Search docs",
+							description: "Search the docs.",
+							exposure: "deferred",
+							parameters: Type.Object({}),
+							execute: async () => ({ content: [], details: {} }),
+						});
+						pi.on("before_agent_start", (event) => {
+							if (mode === "systemPrompt") return { systemPrompt: "Exact prompt." };
+							event.systemPromptOptions.forceSystemPrompt = "Exact prompt.";
+						});
+					},
+				],
+			});
+			try {
+				const requests: TranscriptContext[] = [];
+				harness.setResponses([
+					(context) => {
+						requests.push(context);
+						return fauxAssistantMessage(fauxToolCall("tool_search", { query: "Search the docs", limit: 1 }), {
+							stopReason: "toolUse",
+						});
+					},
+					(context) => {
+						requests.push(context);
+						return fauxAssistantMessage("loaded");
+					},
+					(context) => {
+						requests.push(context);
+						return fauxAssistantMessage("removed");
+					},
+				]);
+				await harness.session.prompt("find docs");
+				expect(requests).toHaveLength(2);
+				const initial = resolveTranscriptTools(requests[0]!.messages, true);
+				const loaded = resolveTranscriptTools(requests[1]!.messages, true);
+				expect(initial.requestTools.map((tool) => tool.name)).toEqual(["tool_search"]);
+				expect(loaded.requestTools).toEqual(initial.requestTools);
+				expect(loaded.anchorsAdditions).toBe(true);
+				const delta = requests[1]!.messages.filter((message) => message.role === "system").at(-1);
+				expect(delta?.toolsAdded?.map((tool) => tool.name)).toEqual(["search_docs"]);
+				expect(delta?.content).toBe("");
+				expect(delta?.sections).toBeUndefined();
+				expect(requests[1]!.messages.indexOf(delta!)).toBeGreaterThan(
+					requests[1]!.messages.findIndex((message) => message.role === "toolResult"),
+				);
+				expect(getCurrentSystemPrompt(requests[1]!.messages)).toBe("Exact prompt.");
+				expect(getCurrentSystemPrompt(harness.session.messages)).not.toBe("Exact prompt.");
+
+				harness.session.setActiveToolsByName(["tool_search"]);
+				await harness.session.prompt("continue");
+				const removed = resolveTranscriptTools(requests[2]!.messages, true);
+				expect(removed.anchorsAdditions).toBe(false);
+				expect(removed.requestTools.map((tool) => tool.name)).toEqual(["tool_search"]);
+				expect(requests[2]!.messages.filter((message) => message.role === "system").at(-1)?.toolsRemoved).toEqual([
+					{ name: "search_docs" },
+				]);
+			} finally {
+				harness.cleanup();
+			}
+		},
+	);
 
 	test("setActiveTools emits prompt sections and tool changes before the next request", async () => {
 		const extension: ExtensionFactory = (pi) => {

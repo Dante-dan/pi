@@ -31,7 +31,7 @@ import {
 	runToolCall,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { contentText, getCurrentSystemMessage, retryDelayMs } from "@earendil-works/pi-ai";
+import { contentText, getCurrentSystemMessage, getInitialSystemMessage, retryDelayMs } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -1742,7 +1742,7 @@ export class AgentSession {
 	 * head of the request; a mid-conversation system message would leave the original prompt
 	 * in place. The forced text is a rendering of the current prompt, so the transcript keeps
 	 * its structured sections and the request is projected instead: the system messages
-	 * collapse into one head holding the forced text and the current tools. Runs after the
+	 * keep their tool changes in place, while a new head holds the forced text and initial tools. Runs after the
 	 * `context` extension handlers.
 	 */
 	/**
@@ -1776,14 +1776,28 @@ export class AgentSession {
 			const transformed = previousTransformContext ? await previousTransformContext(messages, signal) : messages;
 			const forced = this._runSystemPromptOptions?.forceSystemPrompt;
 			if (forced === undefined) return transformed;
-			const current = getCurrentSystemMessage(transformed);
+			const initial = getInitialSystemMessage(transformed);
 			const head: SystemMessage = {
 				role: "system",
 				content: forced,
-				...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
-				timestamp: current?.timestamp ?? Date.now(),
+				...(initial?.toolsAdded ? { toolsAdded: initial.toolsAdded } : {}),
+				...(initial?.toolsRemoved ? { toolsRemoved: initial.toolsRemoved } : {}),
+				timestamp: initial?.timestamp ?? Date.now(),
 			};
-			return [head, ...transformed.filter((message) => message.role !== "system")];
+			const tail = transformed.slice(initial ? 1 : 0).flatMap((message): AgentMessage[] => {
+				if (message.role !== "system") return [message];
+				if (!message.toolsAdded?.length && !message.toolsRemoved?.length) return [];
+				return [
+					{
+						role: "system",
+						content: "",
+						toolsAdded: message.toolsAdded,
+						toolsRemoved: message.toolsRemoved,
+						timestamp: message.timestamp,
+					},
+				];
+			});
+			return [head, ...tail];
 		};
 	}
 
