@@ -33,6 +33,12 @@ export function canonicalizePath(path: string): string {
 	}
 }
 
+/** Return a real, absolute path key for equality checks without changing displayed paths. */
+export function getPathComparisonKey(path: string): string {
+	const canonicalPath = canonicalizePath(nodeResolvePath(path));
+	return process.platform === "win32" ? canonicalPath.toLowerCase() : canonicalPath;
+}
+
 export function getFileRevision(path: string): string | undefined {
 	try {
 		const stats = statSync(path, { bigint: true });
