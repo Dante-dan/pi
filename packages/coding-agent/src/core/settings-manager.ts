@@ -88,6 +88,7 @@ export interface MarkdownSettings {
 }
 
 export interface WarningSettings {
+	bugReport?: boolean; // default: true - suggest /bug after unexpected assistant errors
 	anthropicExtraUsage?: boolean; // default: true
 }
 

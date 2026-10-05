@@ -1,8 +1,10 @@
 import { type AssistantMessage, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, test, vi } from "vitest";
+import { SettingsManager } from "../src/core/settings-manager.ts";
 import { formatCrashExtensionHint, InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 type BugReportHintContext = {
+	settingsManager: SettingsManager;
 	suggestBugReport(): void;
 	maybeShowInstallChangeWarning(): boolean;
 };
@@ -25,7 +27,11 @@ describe("InteractiveMode bug report hints", () => {
 	});
 
 	test("does not suggest reports for retryable provider failures", () => {
-		const context = { suggestBugReport: vi.fn(), maybeShowInstallChangeWarning: vi.fn(() => false) };
+		const context = {
+			settingsManager: SettingsManager.inMemory(),
+			suggestBugReport: vi.fn(),
+			maybeShowInstallChangeWarning: vi.fn(() => false),
+		};
 		const failures = [
 			"500 Internal Server Error",
 			"502 Bad Gateway",
@@ -43,7 +49,11 @@ describe("InteractiveMode bug report hints", () => {
 	});
 
 	test("does not suggest reports for cancellations", () => {
-		const context = { suggestBugReport: vi.fn(), maybeShowInstallChangeWarning: vi.fn(() => false) };
+		const context = {
+			settingsManager: SettingsManager.inMemory(),
+			suggestBugReport: vi.fn(),
+			maybeShowInstallChangeWarning: vi.fn(() => false),
+		};
 
 		maybeSuggestBugReport.call(context, errorMessage("This operation was aborted"));
 		maybeSuggestBugReport.call(context, errorMessage("Request cancelled"));
@@ -53,15 +63,40 @@ describe("InteractiveMode bug report hints", () => {
 	});
 
 	test("suggests reports for unexpected errors", () => {
-		const context = { suggestBugReport: vi.fn(), maybeShowInstallChangeWarning: vi.fn(() => false) };
+		const context = {
+			settingsManager: SettingsManager.inMemory(),
+			suggestBugReport: vi.fn(),
+			maybeShowInstallChangeWarning: vi.fn(() => false),
+		};
 
 		maybeSuggestBugReport.call(context, errorMessage("Unexpected internal state"));
 
 		expect(context.suggestBugReport).toHaveBeenCalledOnce();
 	});
 
+	// #10354: managed distributions can keep their own extension error guidance.
+	test("can disable assistant error hints without changing the error message", () => {
+		const context = {
+			settingsManager: SettingsManager.inMemory({ warnings: { bugReport: false } }),
+			suggestBugReport: vi.fn(),
+			maybeShowInstallChangeWarning: vi.fn(() => false),
+		};
+		const message = errorMessage("Login expired; run x login again");
+		const originalMessage = structuredClone(message);
+
+		maybeSuggestBugReport.call(context, message);
+
+		expect(context.suggestBugReport).not.toHaveBeenCalled();
+		expect(message).toEqual(originalMessage);
+		expect(context.maybeShowInstallChangeWarning).toHaveBeenCalledOnce();
+	});
+
 	test("shows the install change warning instead of a bug report hint", () => {
-		const context = { suggestBugReport: vi.fn(), maybeShowInstallChangeWarning: vi.fn(() => true) };
+		const context = {
+			settingsManager: SettingsManager.inMemory({ warnings: { bugReport: false } }),
+			suggestBugReport: vi.fn(),
+			maybeShowInstallChangeWarning: vi.fn(() => true),
+		};
 
 		maybeSuggestBugReport.call(context, errorMessage("Cannot find module './worker.js'"));
 

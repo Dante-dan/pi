@@ -167,3 +167,4 @@ The built-in extensions are named `builtin:mcp`, `builtin:llama.cpp`, `builtin:c
 | `enableInstallTelemetry` | boolean | `true` | Enable anonymous install/update reporting and selected provider attribution headers. Does not control update checks. |
 | `enableAnalytics` | boolean | `false` | Opt in to analytics data sharing. Currently used only by the experimental first-run setup. |
 | `warnings.anthropicExtraUsage` | boolean | `true` | Warn when Anthropic subscription authentication may use paid extra usage. |
+| `warnings.bugReport` | boolean | `true` | Suggest `/bug` after unexpected assistant errors. Set to `false` when extensions or a managed distribution provide their own error guidance. Error messages, crash reports, and install-change warnings remain enabled. |
