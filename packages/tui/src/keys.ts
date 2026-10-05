@@ -629,6 +629,18 @@ function parseKittySequence(data: string): ParsedKittySequence | null {
 			6: FUNCTIONAL_CODEPOINTS.pageDown,
 			7: FUNCTIONAL_CODEPOINTS.home,
 			8: FUNCTIONAL_CODEPOINTS.end,
+			11: 57364, // F1
+			12: 57365, // F2
+			13: 57366, // F3
+			14: 57367, // F4
+			15: 57368, // F5
+			17: 57369, // F6
+			18: 57370, // F7
+			19: 57371, // F8
+			20: 57372, // F9
+			21: 57373, // F10
+			23: 57374, // F11
+			24: 57375, // F12
 		};
 		const codepoint = funcCodes[keyNum];
 		if (codepoint !== undefined) {
@@ -1141,7 +1153,10 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
 				return false;
 			}
 			const functionKey = key as keyof typeof LEGACY_KEY_SEQUENCES;
-			return matchesLegacySequence(data, LEGACY_KEY_SEQUENCES[functionKey]);
+			return (
+				matchesLegacySequence(data, LEGACY_KEY_SEQUENCES[functionKey]) ||
+				matchesKittySequence(data, 57363 + parseInt(key.slice(1), 10), 0)
+			);
 		}
 	}
 
@@ -1236,6 +1251,7 @@ function formatParsedKey(codepoint: number, modifier: number, baseLayoutKey?: nu
 	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.end) keyName = "end";
 	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.pageUp) keyName = "pageUp";
 	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.pageDown) keyName = "pageDown";
+	else if (effectiveCodepoint >= 57364 && effectiveCodepoint <= 57375) keyName = `f${effectiveCodepoint - 57363}`;
 	else if (effectiveCodepoint === ARROW_CODEPOINTS.up) keyName = "up";
 	else if (effectiveCodepoint === ARROW_CODEPOINTS.down) keyName = "down";
 	else if (effectiveCodepoint === ARROW_CODEPOINTS.left) keyName = "left";

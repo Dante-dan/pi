@@ -491,6 +491,25 @@ describe("matchesKey", () => {
 			assert.strictEqual(parseKey("\x1b[6;5~"), "ctrl+pageDown");
 		});
 
+		// Regression for #10352: Kitty reports lock state on function keys.
+		it("should ignore lock modifiers on Kitty function keys", () => {
+			const codes = [11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 23, 24];
+			const keys = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"] as const;
+			for (const [index, code] of codes.entries()) {
+				const key = keys[index]!;
+				for (const locks of [64, 128, 192]) {
+					const data = `\x1b[${code};${locks + 1}~`;
+					assert.strictEqual(matchesKey(data, key), true);
+					assert.strictEqual(parseKey(data), key);
+				}
+				assert.strictEqual(matchesKey(`\x1b[${code};130~`, key), false);
+				assert.strictEqual(matchesKey(`\x1b[${code};133~`, key), false);
+			}
+			assert.strictEqual(matchesKey("\x1b[17;129~", "f5"), false);
+			assert.strictEqual(matchesKey("\x1b[17;129:2~", "f6"), true);
+			assert.strictEqual(matchesKey("\x1b[102;134u", "ctrl+shift+f"), true);
+		});
+
 		it("should match legacy function keys and clear", () => {
 			assert.strictEqual(matchesKey("\x1bOP", "f1"), true);
 			assert.strictEqual(matchesKey("\x1b[24~", "f12"), true);
