@@ -91,6 +91,7 @@ These variables are read by Pi itself:
 | `PI_HYPERLINKS` | Override OSC 8 hyperlink detection with `1`, `0`, or `auto` |
 | `PI_IMAGE_PROTOCOL` | Override inline image detection with `kitty`, `iterm2`, `none`, or `auto` |
 | `PI_TRUE_COLOR` | Override truecolor detection with `1`, `0`, or `auto` |
+| `PI_TUI_PALETTE_QUERY` | Set to `0` to skip OSC 4 palette queries when their replies leak into keyboard input. Default foreground/background queries remain enabled; the system theme uses its fallback palette |
 | `PI_TUI_ESC_TIMEOUT` | How long to wait after a lone ESC before treating it as Escape, in milliseconds; defaults to `100` over SSH and `10` otherwise. Increase if Alt-key input is misread as Escape |
 | `VISUAL`, `EDITOR` | External editor fallback when `externalEditor` is unset |
 | `HTTP_PROXY`, `HTTPS_PROXY` | Proxy outbound HTTP requests |

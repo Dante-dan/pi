@@ -158,6 +158,29 @@ describe("TUI.queryTerminalColors", () => {
 		}
 	});
 
+	// #10362: avoid generating prefixless palette replies that leak BEL as Ctrl+G.
+	it("allows opting out of palette queries without filtering keyboard input", async () => {
+		const previous = process.env.PI_TUI_PALETTE_QUERY;
+		process.env.PI_TUI_PALETTE_QUERY = "0";
+		const { terminal, tui, component } = setup();
+		try {
+			const query = tui.queryTerminalColors({ timeoutMs: 1000 });
+			assert.strictEqual(terminal.writes.at(-1), "\x1b]10;?\x07\x1b]11;?\x07\x1b[c");
+			terminal.sendInput("\x1b]10;#ffffff\x07");
+			terminal.sendInput("\x1b]11;#000000\x07");
+			terminal.sendInput(";");
+			terminal.sendInput("\x07");
+			// Both requested colors complete the query before DA1.
+			assert.deepStrictEqual(await query, { foreground: WHITE, background: BLACK, palette: undefined });
+			terminal.sendInput(DA1);
+			assert.deepStrictEqual(component.inputs, [";", "\x07"]);
+		} finally {
+			tui.stop();
+			if (previous === undefined) delete process.env.PI_TUI_PALETTE_QUERY;
+			else process.env.PI_TUI_PALETTE_QUERY = previous;
+		}
+	});
+
 	it("resolves on DA1 with the replies that arrived, in query order", async () => {
 		const { terminal, tui } = setup();
 		try {

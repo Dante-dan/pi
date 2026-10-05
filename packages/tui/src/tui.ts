@@ -144,6 +144,7 @@ export interface Component {
 export type TuiInputListenerResult = { consume?: boolean; data?: string } | undefined;
 export type TuiInputListener = (data: string) => TuiInputListenerResult;
 type PendingTerminalColorQuery = {
+	expectedReplyCount: number;
 	foreground?: RgbColor;
 	background?: RgbColor;
 	palette: Array<RgbColor | undefined>;
@@ -165,7 +166,8 @@ const TERMINAL_COLOR_REPLY_COUNT = 2 + TERMINAL_PALETTE_SIZE;
  * Every terminal answers DA1 and terminals answer in order, so the DA1 reply marks the end of
  * the color replies, including for terminals that ignore the color queries.
  */
-const TERMINAL_COLOR_QUERY = `\x1b]10;?\x07\x1b]11;?\x07${Array.from(
+const TERMINAL_DEFAULT_COLOR_QUERY = "\x1b]10;?\x07\x1b]11;?\x07";
+const TERMINAL_COLOR_QUERY = `${TERMINAL_DEFAULT_COLOR_QUERY}${Array.from(
 	{ length: TERMINAL_PALETTE_SIZE },
 	(_, index) => `\x1b]4;${index};?\x07`,
 ).join("")}\x1b[c`;
@@ -1147,7 +1149,7 @@ export abstract class TuiBase extends Container implements TUI {
 		} else if (target < TERMINAL_PALETTE_SIZE) {
 			query.palette[target] = rgb;
 		}
-		if (query.replied.size === TERMINAL_COLOR_REPLY_COUNT) {
+		if (query.replied.size === query.expectedReplyCount) {
 			this.completeTerminalColorQuery(query);
 		}
 		return true;
@@ -1474,8 +1476,10 @@ export abstract class TuiBase extends Container implements TUI {
 		timeoutMs: number;
 		onLateReply?: (colors: TerminalColors) => void;
 	}): Promise<TerminalColors> {
+		const queryPalette = process.env.PI_TUI_PALETTE_QUERY !== "0";
 		return new Promise((resolve) => {
 			const query: PendingTerminalColorQuery = {
+				expectedReplyCount: queryPalette ? TERMINAL_COLOR_REPLY_COUNT : 2,
 				palette: Array.from({ length: TERMINAL_PALETTE_SIZE }, () => undefined),
 				replied: new Set(),
 				deliver: resolve,
@@ -1487,7 +1491,9 @@ export abstract class TuiBase extends Container implements TUI {
 				resolve(this.terminalColorQueryResult(query));
 			}, timeoutMs);
 			this.pendingTerminalColorQueries.push(query);
-			this.terminal.write(TERMINAL_COLOR_QUERY);
+			// Allow opting out when a terminal transport corrupts OSC 4 replies (#10362).
+			// Keep default color detection; the system theme handles an unavailable palette.
+			this.terminal.write(queryPalette ? TERMINAL_COLOR_QUERY : `${TERMINAL_DEFAULT_COLOR_QUERY}\x1b[c`);
 		});
 	}
 }
