@@ -1384,41 +1384,17 @@ export class Editor implements Component, Focusable {
 			this.pushUndoSnapshot();
 
 			// Delete grapheme before cursor (handles emojis, combining characters, etc.)
-			let line = this.state.lines[this.state.cursorLine] || "";
+			const line = this.state.lines[this.state.cursorLine] || "";
 			const beforeCursor = line.slice(0, this.state.cursorCol);
 
 			// Find the last grapheme in the text before cursor
 			const graphemes = [...this.segment(beforeCursor, "grapheme")];
 			const lastGrapheme = graphemes[graphemes.length - 1];
 			const graphemeLength = lastGrapheme ? lastGrapheme.segment.length : 1;
-			const isPastedSegmented = PASTE_MARKER_SINGLE.exec(lastGrapheme.segment);
 
-			if (isPastedSegmented) {
-				// This contains the id part e.g 4 from [paste #4 +123 lines]
-				const targetId = Number(isPastedSegmented[1]);
-				this.pastes.delete(targetId);
-				this.pasteCounter--;
-
-				// Shift registry entries down in ascending id order, independent
-				// of marker order in the text ([paste #3] becomes [paste #2] when
-				// [paste #1] is removed).
-				const higherIds = [...this.pastes.keys()].filter((id) => id > targetId).sort((a, b) => a - b);
-				for (const id of higherIds) {
-					this.pastes.set(id - 1, this.pastes.get(id)!);
-					this.pastes.delete(id);
-				}
-
-				// Renumber markers with ids greater than the removed one.
-				this.state.lines = this.state.lines.map((line) =>
-					line.replace(PASTE_MARKER_REGEX, (fullMatch, idGroup, suffixGroup) => {
-						const x = Number(idGroup);
-						if (x <= targetId) return fullMatch;
-						return `[paste #${x - 1}${suffixGroup}]`;
-					}),
-				);
-			}
-
-			line = this.state.lines[this.state.cursorLine] || "";
+			// Keep paste IDs stable: other occurrences and the kill ring can still
+			// reference this paste after its visible marker has been deleted.
+			// The registry is cleared when the draft is replaced or submitted.
 
 			const before = line.slice(0, this.state.cursorCol - graphemeLength);
 			const after = line.slice(this.state.cursorCol);

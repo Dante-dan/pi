@@ -3949,6 +3949,38 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.getText(), textBefore);
 		});
 
+		// #10351: deleting one occurrence must not invalidate other yanked copies.
+		it("submits the remaining pasted content after duplicate yank and backspace", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			let submitted = "";
+			editor.onSubmit = (text) => {
+				submitted = text;
+			};
+			const paste = Array.from({ length: 11 }, (_, i) => `line ${i + 1}`).join("\n");
+			editor.handleInput(`\x1b[200~${paste}\x1b[201~`);
+			editor.handleInput("\x15"); // Ctrl+U
+			editor.handleInput("\x19"); // Ctrl+Y
+			editor.handleInput("\x19"); // Ctrl+Y
+			editor.handleInput("\x7f"); // Backspace
+			assert.strictEqual(editor.getExpandedText(), paste);
+			editor.handleInput("\r");
+			assert.strictEqual(submitted, paste);
+		});
+
+		// #10351: the kill ring can retain an ID even when no marker is visible.
+		it("keeps killed paste identities when deleting a marker and pasting new content", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const pasteA = bigPaste("alpha");
+			const pasteB = bigPaste("beta");
+			editor.handleInput(`\x1b[200~${pasteA}\x1b[201~`);
+			editor.handleInput("\x15");
+			editor.handleInput("\x19");
+			editor.handleInput("\x7f");
+			editor.handleInput(`\x1b[200~${pasteB}\x1b[201~`);
+			editor.handleInput("\x19");
+			assert.strictEqual(editor.getExpandedText(), pasteB + pasteA);
+		});
+
 		it("undo after paste marker deletion restores the paste registry", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			let submitted = "";
@@ -3977,13 +4009,13 @@ describe("Editor component", () => {
 			editor.handleInput(`\x1b[200~${pasteB}\x1b[201~`); // #2 = B, cursor at end
 			editor.handleInput("\x01"); // Ctrl+A
 			editor.handleInput("\x1b[C"); // right over marker #1
-			editor.handleInput("\x7f"); // delete marker #1, renumbers #2 -> #1
+			editor.handleInput("\x7f"); // delete marker #1, keeping #2 stable
 			editor.handleInput("\x1b[45;5u"); // undo
 			editor.handleInput("\r");
 			assert.strictEqual(submitted, pasteA + pasteB);
 		});
 
-		it("renumbers the paste registry in ascending id order when markers are out of order in text", () => {
+		it("preserves other paste entries when markers are out of order in text", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			let submitted = "";
 			editor.onSubmit = (t) => {
@@ -3999,7 +4031,7 @@ describe("Editor component", () => {
 			editor.handleInput("\x01"); // Ctrl+A
 			editor.handleInput(`\x1b[200~${pasteC}\x1b[201~`); // #3 = C, text: [#3][#2][#1]
 			editor.handleInput("\x05"); // Ctrl+E
-			editor.handleInput("\x7f"); // delete marker #1, renumber #3 -> #2 and #2 -> #1
+			editor.handleInput("\x7f"); // delete marker #1, keeping #3 and #2 stable
 			editor.handleInput("\r");
 			assert.strictEqual(submitted, pasteC + pasteB);
 		});
