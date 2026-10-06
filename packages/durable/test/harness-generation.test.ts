@@ -29,7 +29,7 @@ import { describe, expect, it } from "vitest";
 import { resolveSettings } from "../src/harness/agent.ts";
 import type { SessionImpl } from "../src/session/session.ts";
 import { allEntries, type ChatSetup, chatSetup, openChat, textOf, unanswered, waitFor } from "./chat-support.ts";
-import { addSection } from "./harness-support.ts";
+import { addSection, addTool, tool } from "./harness-support.ts";
 import { ControlledStorage, context } from "./session-support.ts";
 
 const ERROR_503 = fauxAssistantMessage([], { stopReason: "error", errorMessage: "503 Service Unavailable" });
@@ -86,6 +86,45 @@ function livePublications(harness: Harness): LiveState[] {
 }
 
 describe("generation", () => {
+	// Regression coverage for #10542: providers must receive initial instructions and tools before the input.
+	it("sends the initial system baseline first while keeping later system changes positional", async () => {
+		const setup = chatSetup();
+		const read = tool("read");
+		addTool(setup.registry, read);
+		const requests: Message[][] = [];
+		const capture = (request: { messages: Message[] }) => {
+			requests.push(request.messages);
+			return fauxAssistantMessage("answer");
+		};
+		setup.faux.setResponses([capture, capture]);
+		const { harness, root } = await openChat(new MemoryStorage(), setup);
+		await root.configure({ instructions: "initial instructions", tools: [read] }, context);
+		try {
+			await (await root.submit({ type: "input", content: "first" }, context)).wait(context);
+			expect(requests[0]!.map((message) => message.role)).toEqual(["system", "user"]);
+			expect(requests[0]![0]).toMatchObject({
+				sections: { instructions: "<instructions>\ninitial instructions\n</instructions>" },
+				toolsAdded: [{ name: "read" }],
+			});
+			await root.configure({ instructions: "updated instructions" }, context);
+			await (await root.submit({ type: "input", content: "second" }, context)).wait(context);
+			expect(requests[1]!.map((message) => message.role)).toEqual(["system", "user", "assistant", "user", "system"]);
+			expect(requests[1]![4]).toMatchObject({
+				sections: { instructions: "<instructions>\nupdated instructions\n</instructions>" },
+			});
+			expect((await allEntries(root)).map((entry) => entry.kind)).toEqual([
+				"pi.user",
+				"pi.system",
+				"pi.assistant",
+				"pi.user",
+				"pi.system",
+				"pi.assistant",
+			]);
+		} finally {
+			await harness.close(context);
+		}
+	});
+
 	it("answers an input and settles its submission", async () => {
 		const setup = chatSetup();
 		addSection(setup.registry, "preamble", () => "You are helpful.", { tag: false });

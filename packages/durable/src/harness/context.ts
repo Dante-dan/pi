@@ -78,7 +78,15 @@ export async function deriveContext(
 			(message) => message.role !== "assistant" || !EXCLUDED_STOP_REASONS.has(message.stopReason),
 		);
 	});
-	return { head, entries, contributions, messages: orderToolResults(contributions.flat()) };
+	const messages = contributions.flat();
+	// Preparation appends the initial system baseline after admitted inputs. Providers need that baseline first,
+	// but later positional system changes must remain where they were committed.
+	const firstNonUser = messages.findIndex((message) => message.role !== "user");
+	if (firstNonUser > 0 && messages[firstNonUser]!.role === "system") {
+		const [initial] = messages.splice(firstNonUser, 1);
+		messages.unshift(initial!);
+	}
+	return { head, entries, contributions, messages: orderToolResults(messages) };
 }
 
 /** The raw active entries within captured bounds, without deriving model context. */
