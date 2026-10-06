@@ -139,6 +139,38 @@ describe("Anthropic raw SSE parsing", () => {
 		expect(eventModels).toEqual([model, model, model, model, model, model]);
 	});
 
+	// Regression test for earendil-works/pi#10390: CRLF is one line break even across chunks.
+	it.each(["\r\n", "\n", "\r"])("preserves SSE events at every byte split with %j line endings", async (newline) => {
+		const body = minimalAnthropicEvents
+			.map(({ event, data }) => `event: ${event}${newline}data: ${data}${newline}${newline}`)
+			.join("");
+		const bytes = new TextEncoder().encode(body);
+		const model = getModel("anthropic", "claude-haiku-4-5");
+		const context = normalizeContext({ messages: [{ role: "user", content: "Hello", timestamp: 1 }] });
+		for (let offset = 1; offset < bytes.length; offset++) {
+			const providerEvents: unknown[] = [];
+			const response = new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(bytes.slice(0, offset));
+						controller.enqueue(bytes.slice(offset));
+						controller.close();
+					},
+				}),
+				{ headers: { "content-type": "text/event-stream" } },
+			);
+			const result = await streamAnthropic(model, context, {
+				client: createFakeAnthropicClient(response),
+				onProviderStreamEvent: (event) => {
+					providerEvents.push(event);
+				},
+			}).result();
+			expect(result.stopReason, `split at byte ${offset}`).toBe("stop");
+			expect(result.content).toEqual([{ type: "text", text: "Hello" }]);
+			expect(providerEvents).toEqual(minimalAnthropicEvents.map(({ data }) => JSON.parse(data)));
+		}
+	});
+
 	it("keeps signed thinking replayable when a proxy relabels the model", async () => {
 		// Regression test for earendil-works/pi#9188.
 		const model = getModel("anthropic", "claude-opus-5");
