@@ -93,6 +93,9 @@ export function formatFileOperations(readFiles: string[], modifiedFiles: string[
 /** Maximum characters for a tool result in serialized summaries. */
 const TOOL_RESULT_MAX_CHARS = 2000;
 
+/** Characters retained from each end of a thinking-only assistant message. */
+const THINKING_ONLY_EDGE_CHARS = 1000;
+
 /**
  * Truncate text to a maximum character length for summarization.
  * Keeps the beginning and appends a truncation marker.
@@ -109,7 +112,8 @@ function truncateForSummary(text: string, maxChars: number): string {
  * Call convertToLlm() first to handle custom message types.
  *
  * Tool results are truncated to keep the summarization request within
- * reasonable token budgets. Full content is not needed for summarization.
+ * reasonable token budgets. Long thinking-only messages keep their beginning
+ * and end, since providers can omit this content from ordinary requests.
  */
 export function serializeConversation(messages: Message[]): string {
 	const parts: string[] = [];
@@ -135,7 +139,14 @@ export function serializeConversation(messages: Message[]): string {
 			}
 
 			if (thinkingParts.length > 0) {
-				parts.push(`[Assistant thinking]: ${thinkingParts.join("\n")}`);
+				let thinking = thinkingParts.join("\n");
+				const thinkingOnly =
+					toolCalls.length === 0 && !msg.content.some((block) => block.type === "text" && block.text.length > 0);
+				if (thinkingOnly && thinking.length > THINKING_ONLY_EDGE_CHARS * 2) {
+					const omittedChars = thinking.length - THINKING_ONLY_EDGE_CHARS * 2;
+					thinking = `${thinking.slice(0, THINKING_ONLY_EDGE_CHARS)}\n\n[... ${omittedChars} more characters truncated]\n\n${thinking.slice(-THINKING_ONLY_EDGE_CHARS)}`;
+				}
+				parts.push(`[Assistant thinking]: ${thinking}`);
 			}
 			if (msg.content.some((block) => block.type === "text")) {
 				parts.push(`[Assistant]: ${contentText(msg.content)}`);

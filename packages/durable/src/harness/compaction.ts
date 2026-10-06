@@ -54,6 +54,9 @@ type Next = NextTaskState<CompactionCheckpoint, CompactionResult>;
 /** Longest tool result text a serialized summary source keeps. */
 const TOOL_RESULT_MAX_CHARS = 2000;
 
+/** Characters retained from each end of a thinking-only assistant message. */
+const THINKING_ONLY_EDGE_CHARS = 1000;
+
 const SUMMARY_PREFIX =
 	"The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 const SUMMARY_SUFFIX = "\n</summary>";
@@ -366,7 +369,15 @@ export function serializeConversation(messages: readonly Message[]): string {
 						]
 					: [],
 			);
-			if (thinking.length > 0) parts.push(`[Assistant thinking]: ${thinking.join("\n")}`);
+			if (thinking.length > 0) {
+				let joined = thinking.join("\n");
+				const thinkingOnly = calls.length === 0 && !text.some((part) => part.length > 0);
+				if (thinkingOnly && joined.length > THINKING_ONLY_EDGE_CHARS * 2) {
+					const omittedChars = joined.length - THINKING_ONLY_EDGE_CHARS * 2;
+					joined = `${joined.slice(0, THINKING_ONLY_EDGE_CHARS)}\n\n[... ${omittedChars} more characters truncated]\n\n${joined.slice(-THINKING_ONLY_EDGE_CHARS)}`;
+				}
+				parts.push(`[Assistant thinking]: ${joined}`);
+			}
 			if (text.length > 0) parts.push(`[Assistant]: ${text.join("\n")}`);
 			if (calls.length > 0) parts.push(`[Assistant tool calls]: ${calls.join("; ")}`);
 		} else if (message.role === "toolResult") {
