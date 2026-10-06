@@ -122,7 +122,7 @@ stdenv.mkDerivation {
 
     makeWrapper ${nodejs}/bin/node "$out/bin/pi" \
       --add-flags "$out/lib/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js" \
-      --prefix PATH : ${
+      --suffix PATH : ${
         lib.makeBinPath (
           [
             nodejs
