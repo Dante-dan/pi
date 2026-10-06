@@ -368,6 +368,7 @@ export class Transaction implements Tx {
 					...rest,
 					id,
 					conversationId,
+					createdAt: Date.now(),
 					head: head === "self" ? id : head,
 					byTaskId: this.#scope.taskId,
 				},

@@ -317,6 +317,8 @@ export type ContextEdit = {
 export type EntryRecord = {
 	readonly id: EntryId;
 	readonly conversationId: ConversationId;
+	/** Unix time in milliseconds when the Session staged this entry. Absent on entries written before timestamps. */
+	readonly createdAt?: number;
 	/** Application-defined entry discriminator. */
 	readonly kind: string;
 	/** Messages contributed to model context; absent for display or bookkeeping entries. */
@@ -332,7 +334,7 @@ export type EntryRecord = {
 };
 
 /** Entry content supplied before the Session assigns identity and task attribution. */
-export type EntryDraft = Omit<EntryRecord, "id" | "conversationId" | "byTaskId" | "head"> & {
+export type EntryDraft = Omit<EntryRecord, "id" | "conversationId" | "createdAt" | "byTaskId" | "head"> & {
 	/** `"self"` starts active context at the newly assigned entry ID. */
 	readonly head?: EntryId | "self";
 };

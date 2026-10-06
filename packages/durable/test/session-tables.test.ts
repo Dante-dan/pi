@@ -131,6 +131,7 @@ describe("Session transaction tables", () => {
 
 	it("creates conversations, entries, and tasks with minted IDs", async () => {
 		const { session, storage, publications } = openTestSession();
+		const before = Date.now();
 		const created = await session.commit(async (tx) => {
 			const conversation = await tx.createConversation({ ownership: { kind: "ownerless" } });
 			const first = await tx.appendEntry(conversation.id, { kind: "note", data: "one" });
@@ -148,9 +149,15 @@ describe("Session transaction tables", () => {
 		expect(created.first).toEqual({
 			id: created.first.id,
 			conversationId: created.conversation.id,
+			createdAt: expect.any(Number),
 			kind: "note",
 			data: "one",
 		});
+		// #10549: transcript entries keep their wall-clock time after persistence, independently of model timestamps.
+		expect(created.first.createdAt).toBeGreaterThanOrEqual(before);
+		expect(created.headed.createdAt).toBeGreaterThanOrEqual(created.first.createdAt!);
+		expect(created.headed.createdAt).toBeLessThanOrEqual(Date.now());
+		expect((await storage.entry(created.first.id, context))!.entry).toEqual(created.first);
 		expect((await storage.entry(created.headed.id, context))!.entry).toEqual(created.headed);
 		expect(await storage.task(created.task, context)).toEqual({
 			id: created.task,
