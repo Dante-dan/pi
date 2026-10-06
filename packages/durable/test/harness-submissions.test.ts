@@ -47,7 +47,16 @@ describe("submissions", () => {
 			entry: expect.any(Number),
 		});
 		const entries = await allEntries(root);
-		expect(entries).toEqual([{ id: settled.entry, conversationId: root.id, kind: "note", data: { text: "x" } }]);
+		// #10549: entries staged through submissions receive the Session timestamp too.
+		expect(entries).toEqual([
+			{
+				id: settled.entry,
+				conversationId: root.id,
+				createdAt: expect.any(Number),
+				kind: "note",
+				data: { text: "x" },
+			},
+		]);
 		expect(await harness.snapshot(LiveDoc, root.id, context)).toEqual({});
 		const tasks = await harness.commit((tx) => tx.scanTasks({ conversationId: root.id }, 10), context);
 		expect(tasks.items).toEqual([]);
@@ -264,7 +273,13 @@ describe("submissions", () => {
 		const counter = await root.commit((tx) => tx.appendEntry(Counter, root.id, { data: { n: 1 } }), context);
 		const n: number = counter.data.n;
 		expect(n).toBe(1);
-		expect(counter).toEqual({ id: counter.id, conversationId: root.id, kind: "app.counter", data: { n: 1 } });
+		expect(counter).toEqual({
+			id: counter.id,
+			conversationId: root.id,
+			createdAt: expect.any(Number),
+			kind: "app.counter",
+			data: { n: 1 },
+		});
 		const marker = await root.commit((tx) => tx.appendEntry(Marker, root.id, {}), context);
 		expect(marker.kind).toBe("app.marker");
 		expect(await root.commit((tx) => tx.entry(Counter, counter.id), context)).toEqual(counter);
