@@ -137,6 +137,7 @@ describe("InteractiveMode compaction events", () => {
 		};
 		const fakeThis = {
 			isInitialized: true,
+			programStatus: { handle: vi.fn() },
 			footer: { invalidate: vi.fn() },
 			autoCompactionEscapeHandler: undefined as (() => void) | undefined,
 			autoCompactionLoader: undefined,
@@ -200,9 +201,11 @@ describe("InteractiveMode compaction events", () => {
 	test("updates the working state when the same agent run resumes after compaction", async () => {
 		const fakeThis = {
 			isInitialized: true,
+			programStatus: { handle: vi.fn() },
 			footer: { invalidate: vi.fn() },
 			activeStatusIndicator: undefined,
 			workingVisible: true,
+			sessionManager: { getSessionName: () => undefined },
 			showWorkingStatusIndicator: vi.fn(),
 			clearStatusIndicator: vi.fn(),
 			settingsManager: { getShowTerminalProgress: () => true },
@@ -235,6 +238,7 @@ describe("InteractiveMode compaction events", () => {
 			clearAllQueues: () => ({ steering: [], followUp: [] }),
 			updatePendingMessagesDisplay: vi.fn(),
 			session: { abort },
+			programStatus: { abort: vi.fn() },
 		};
 		const restoreQueuedMessagesToEditor = Reflect.get(InteractiveMode.prototype, "restoreQueuedMessagesToEditor") as (
 			this: typeof ui,

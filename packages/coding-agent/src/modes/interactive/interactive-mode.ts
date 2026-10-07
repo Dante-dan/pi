@@ -184,6 +184,7 @@ import { UserMessageSelectorComponent } from "./components/user-message-selector
 import { editInExternalEditor } from "./external-editor.ts";
 import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
 import { getModelSearchText } from "./model-search.ts";
+import { ProgramStatusReporter } from "./program-status-reporter.ts";
 import { shareSession } from "./session-share.ts";
 import {
 	getAvailableThemes,
@@ -545,6 +546,7 @@ export class InteractiveMode {
 
 	// Shutdown state
 	private shutdownRequested = false;
+	private programStatus = new ProgramStatusReporter(() => this.ui.terminal);
 
 	/** The `/bug` hint is shown at most once per session so error output stays readable. */
 	private bugReportHintShown = false;
@@ -921,6 +923,7 @@ export class InteractiveMode {
 		nextUi.setFocus(focus);
 		if (!startRenderer) return true;
 		nextUi.start();
+		this.programStatus.report();
 		this.themeController.rebindTui();
 		this.rebindExtensionTerminalInputListeners();
 		if (
@@ -990,6 +993,7 @@ export class InteractiveMode {
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
 		this.isInitialized = true;
+		this.programStatus.set({ state: "idle" });
 		this.ensurePngTranscoder();
 
 		this.themeController.applyFromSettings();
@@ -2682,8 +2686,11 @@ export class InteractiveMode {
 		title: string,
 		options: string[],
 		opts?: ExtensionUIDialogOptions,
+		statusKind: "question" | "permission" = "question",
+		statusTitle = title,
 	): Promise<string | undefined> {
-		return new Promise((resolve) => {
+		const restoreStatus = this.programStatus.block(statusKind, statusTitle);
+		return new Promise<string | undefined>((resolve) => {
 			if (opts?.signal?.aborted) {
 				resolve(undefined);
 				return;
@@ -2716,7 +2723,7 @@ export class InteractiveMode {
 			this.editorContainer.addChild(this.extensionSelector);
 			this.ui.setFocus(this.extensionSelector);
 			this.ui.requestRender();
-		});
+		}).finally(restoreStatus);
 	}
 
 	/**
@@ -2739,7 +2746,7 @@ export class InteractiveMode {
 		message: string,
 		opts?: ExtensionUIDialogOptions,
 	): Promise<boolean> {
-		const result = await this.showExtensionSelector(`${title}\n${message}`, ["Yes", "No"], opts);
+		const result = await this.showExtensionSelector(`${title}\n${message}`, ["Yes", "No"], opts, "permission", title);
 		return result === "Yes";
 	}
 
@@ -2759,7 +2766,8 @@ export class InteractiveMode {
 		placeholder?: string,
 		opts?: ExtensionUIDialogOptions,
 	): Promise<string | undefined> {
-		return new Promise((resolve) => {
+		const restoreStatus = this.programStatus.block("question", title);
+		return new Promise<string | undefined>((resolve) => {
 			if (opts?.signal?.aborted) {
 				resolve(undefined);
 				return;
@@ -2792,7 +2800,7 @@ export class InteractiveMode {
 			this.editorContainer.addChild(this.extensionInput);
 			this.ui.setFocus(this.extensionInput);
 			this.ui.requestRender();
-		});
+		}).finally(restoreStatus);
 	}
 
 	/**
@@ -2811,7 +2819,8 @@ export class InteractiveMode {
 	 * Show a multi-line editor for extensions (with Ctrl+G support).
 	 */
 	private showExtensionEditor(title: string, prefill?: string): Promise<string | undefined> {
-		return new Promise((resolve) => {
+		const restoreStatus = this.programStatus.block("question", title);
+		return new Promise<string | undefined>((resolve) => {
 			this.extensionEditor = new ExtensionEditorComponent(
 				this.ui,
 				this.keybindings,
@@ -2834,7 +2843,7 @@ export class InteractiveMode {
 			this.editorContainer.addChild(this.extensionEditor);
 			this.ui.setFocus(this.extensionEditor);
 			this.ui.requestRender();
-		});
+		}).finally(restoreStatus);
 	}
 
 	/**
@@ -3389,6 +3398,7 @@ export class InteractiveMode {
 		}
 
 		this.footer.invalidate();
+		this.programStatus.handle(event, event.type === "turn_start" ? this.sessionManager.getSessionName() : undefined);
 
 		switch (event.type) {
 			case "agent_start":
@@ -4435,6 +4445,7 @@ export class InteractiveMode {
 			clearInterval(suspendKeepAlive);
 			process.removeListener("SIGINT", ignoreSigint);
 			this.ui.start();
+			this.programStatus.report();
 			this.ui.requestRender(true);
 		});
 
@@ -4586,6 +4597,7 @@ export class InteractiveMode {
 			}
 		} finally {
 			this.ui.start();
+			this.programStatus.report();
 			this.ui.requestRender(true);
 		}
 	}
@@ -4719,6 +4731,9 @@ export class InteractiveMode {
 	}
 
 	private restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number {
+		if (options?.abort) {
+			this.programStatus.abort();
+		}
 		const { steering, followUp } = this.clearAllQueues();
 		const allQueued = [...steering, ...followUp];
 		if (allQueued.length === 0) {
@@ -6309,6 +6324,7 @@ export class InteractiveMode {
 	}
 
 	private async showLoginDialog(providerId: string, providerName: string, onBack?: () => void): Promise<void> {
+		const restoreStatus = this.programStatus.block("auth", providerName);
 		const previousModel = this.session.model;
 		const dialog = new LoginDialogComponent(this.ui, providerId, (_success, _message) => {}, providerName);
 		this.editorContainer.clear();
@@ -6340,6 +6356,8 @@ export class InteractiveMode {
 			} else {
 				this.showError(`Failed to login to ${providerName}: ${errorMsg}`);
 			}
+		} finally {
+			restoreStatus();
 		}
 	}
 

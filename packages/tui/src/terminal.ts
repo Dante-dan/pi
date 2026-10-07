@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { setKittyProtocolActive } from "./keys.ts";
 import { isNativeModifierPressed } from "./native-modifiers.ts";
 import { getNativePlatformHelper } from "./native-platform.ts";
+import { encodeProgramStatus, PROGRAM_STATUS_QUERY, type ProgramStatus } from "./program-status.ts";
 import { StdinBuffer } from "./stdin-buffer.ts";
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
@@ -110,6 +111,9 @@ export interface Terminal {
 
 	// Progress indicator (OSC 9;4)
 	setProgress(active: boolean): void;
+
+	// Root program status (OSC 7501), independent of progress.
+	setProgramStatus(status: ProgramStatus): void;
 }
 
 const DEFAULT_ESCAPE_TIMEOUT_MS = 10;
@@ -147,6 +151,9 @@ export class ProcessTerminal implements Terminal {
 	private keyboardProtocolBufferFlushTimer?: ReturnType<typeof setTimeout>;
 	private stdinBuffer?: StdinBuffer;
 	private stdinDataHandler?: (data: string) => void;
+	private programStatusSupported = process.env.PI_PROGRAM_STATUS === "1";
+	private programStatusQueryPending = false;
+	private programStatus?: ProgramStatus;
 	private progressInterval?: ReturnType<typeof setInterval>;
 	private writeLogPath = (() => {
 		const env = process.env.PI_TUI_WRITE_LOG || "";
@@ -217,6 +224,14 @@ export class ProcessTerminal implements Terminal {
 
 		// Forward individual sequences to the input handler
 		this.stdinBuffer.on("data", (sequence) => {
+			if (/^\x1b\]7501;\?(?:[^\x07\x1b]*)(?:\x07|\x1b\\)$/.test(sequence)) {
+				if (this.programStatusQueryPending) {
+					this.programStatusSupported = true;
+					this.programStatusQueryPending = false;
+					if (this.programStatus) this.setProgramStatus(this.programStatus);
+				}
+				return;
+			}
 			const negotiation = this.readKeyboardProtocolNegotiationSequence(sequence);
 			if (negotiation === "pending") {
 				this.scheduleKeyboardProtocolNegotiationBufferFlush();
@@ -261,7 +276,10 @@ export class ProcessTerminal implements Terminal {
 		this.keyboardProtocolPushed = true;
 		this.pendingKeyboardProtocolDeviceAttributes += 1;
 		this.clearKeyboardProtocolNegotiationBuffer();
-		process.stdout.write(KITTY_KEYBOARD_PROTOCOL_QUERY);
+		this.programStatusQueryPending = process.env.PI_PROGRAM_STATUS !== "0" && process.env.PI_PROGRAM_STATUS !== "1";
+		this.programStatusSupported = process.env.PI_PROGRAM_STATUS === "1";
+		const query = this.programStatusQueryPending ? PROGRAM_STATUS_QUERY : "";
+		process.stdout.write(KITTY_KEYBOARD_PROTOCOL_QUERY.replace("\x1b[c", `${query}\x1b[c`));
 	}
 
 	private handleKeyboardProtocolNegotiationSequence(
@@ -271,6 +289,7 @@ export class ProcessTerminal implements Terminal {
 		if (negotiationSequence.type === "device-attributes") {
 			if (this.pendingKeyboardProtocolDeviceAttributes === 0) return false;
 			this.pendingKeyboardProtocolDeviceAttributes -= 1;
+			this.programStatusQueryPending = false;
 		}
 		if (negotiationSequence.type === "kitty-flags") {
 			if (negotiationSequence.flags !== 0) {
@@ -427,6 +446,9 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	stop(): void {
+		if (this.programStatus) this.setProgramStatus({ state: "clear", app: this.programStatus.app });
+		this.programStatus = undefined;
+		this.programStatusQueryPending = false;
 		if (this.clearProgressInterval()) {
 			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
 		}
@@ -527,6 +549,11 @@ export class ProcessTerminal implements Terminal {
 	setTitle(title: string): void {
 		// OSC 0;title BEL - set terminal window title
 		process.stdout.write(`\x1b]0;${title}\x07`);
+	}
+
+	setProgramStatus(status: ProgramStatus): void {
+		this.programStatus = status;
+		if (this.programStatusSupported) this.write(encodeProgramStatus(status));
 	}
 
 	setProgress(active: boolean): void {

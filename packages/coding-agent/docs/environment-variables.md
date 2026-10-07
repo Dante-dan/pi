@@ -88,6 +88,7 @@ These variables are read by Pi itself:
 | `PI_SHARE_VIEWER_URL` | Override the base URL used by `/share` |
 | `PI_RADIUS_GATEWAY` | Override the Radius gateway origin used by `/bug` uploads and Radius relay connections |
 | `PI_HARDWARE_CURSOR` | Set to `1` to show the hardware cursor; see [Terminal setup](terminal-setup.md) |
+| `PI_PROGRAM_STATUS` | Override OSC 7501 program status detection: `1` enables reports, `0` disables them; otherwise report only after the terminal confirms support |
 | `PI_HYPERLINKS` | Override OSC 8 hyperlink detection with `1`, `0`, or `auto` |
 | `PI_IMAGE_PROTOCOL` | Override inline image detection with `kitty`, `iterm2`, `none`, or `auto` |
 | `PI_TRUE_COLOR` | Override truecolor detection with `1`, `0`, or `auto` |

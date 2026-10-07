@@ -35,6 +35,7 @@ type RenderSessionItems = (
 
 type RenderSessionContextThis = {
 	pendingTools: Map<string, ToolExecutionComponent>;
+	programStatus: { handle(event: AgentSessionEvent): void };
 	chatContainer: Container;
 	footer: { invalidate(): void };
 	ui: TUI;
@@ -66,6 +67,7 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 	const chatContainer = new Container();
 	return {
 		pendingTools: new Map<string, ToolExecutionComponent>(),
+		programStatus: { handle: vi.fn() },
 		chatContainer,
 		footer: { invalidate: vi.fn() },
 		ui: { requestRender: vi.fn() } as unknown as TUI,

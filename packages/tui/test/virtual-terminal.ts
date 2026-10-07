@@ -1,5 +1,6 @@
 import type { Terminal as XtermTerminalType } from "@xterm/headless";
 import xterm from "@xterm/headless";
+import type { ProgramStatus } from "../src/program-status.ts";
 import type { Terminal } from "../src/terminal.ts";
 
 // Extract Terminal class from the module
@@ -101,6 +102,7 @@ export class VirtualTerminal implements Terminal {
 	}
 
 	setProgress(_active: boolean): void {}
+	setProgramStatus(_status: ProgramStatus): void {}
 
 	// Test-specific methods not in Terminal interface
 

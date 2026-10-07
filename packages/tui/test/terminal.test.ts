@@ -132,13 +132,86 @@ describe("ProcessTerminal Kitty keyboard protocol negotiation", () => {
 	it("queries Kitty mode before enabling modifyOtherKeys fallback", () => {
 		const harness = setupNegotiation();
 		try {
-			assert.equal(harness.writes[0], "\x1b[>7u\x1b[?u\x1b[c");
+			assert.equal(harness.writes[0], "\x1b[>7u\x1b[?u\x1b]7501;?\x1b\\\x1b[c");
 			assert.equal(harness.writes.includes("\x1b[>4;2m"), false);
 			assert.equal(harness.terminal.kittyProtocolActive, false);
 		} finally {
 			harness.cleanup();
 		}
 	});
+
+	// #10607: use the same fake stdin/stdout harness as keyboard negotiation.
+	it("reports the pending status when support is confirmed before DA1", () => {
+		const harness = setupNegotiation();
+		try {
+			harness.terminal.setProgramStatus({ state: "idle", app: "pi" });
+			assert.equal(
+				harness.writes.some((write) => write.includes("state=idle")),
+				false,
+			);
+			harness.send("\x1b]7501;?\x1b\\");
+			assert.ok(harness.writes.includes("\x1b]7501;state=idle:app=pi\x1b\\"));
+			harness.send("\x1b[?62;4;52c");
+			harness.terminal.setProgramStatus({ state: "working", app: "pi" });
+			assert.ok(harness.writes.includes("\x1b]7501;state=working:app=pi\x1b\\"));
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("ignores support replies after DA1 and consumes them without editor input", () => {
+		const harness = setupNegotiation();
+		try {
+			harness.send("\x1b[?62;4;52c");
+			harness.send("\x1b]7501;?\x07");
+			harness.terminal.setProgramStatus({ state: "working", app: "pi" });
+			assert.equal(
+				harness.writes.some((write) => write.includes("state=")),
+				false,
+			);
+			assert.equal(harness.getInput(), undefined);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("handles split support replies and forward-compatible reply fields", () => {
+		const harness = setupNegotiation();
+		try {
+			harness.send("\x1b]7501;");
+			harness.send("?:version=1\x07");
+			harness.terminal.setProgramStatus({ state: "done", app: "pi" });
+			assert.ok(harness.writes.includes("\x1b]7501;state=done:app=pi\x1b\\"));
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	for (const value of ["0", "1"]) {
+		it(`honors PI_PROGRAM_STATUS=${value}`, () => {
+			const previous = process.env.PI_PROGRAM_STATUS;
+			process.env.PI_PROGRAM_STATUS = value;
+			const harness = setupNegotiation();
+			try {
+				assert.equal(harness.writes[0].includes("7501"), false);
+				harness.send("\x1b]7501;?\x07");
+				harness.terminal.setProgramStatus({ state: "idle", app: "pi" });
+				assert.equal(
+					harness.writes.some((write) => write.includes("state=idle")),
+					value === "1",
+				);
+				harness.cleanup();
+				assert.equal(
+					harness.writes.some((write) => write.includes("state=clear:app=pi")),
+					value === "1",
+				);
+			} finally {
+				harness.cleanup();
+				if (previous === undefined) delete process.env.PI_PROGRAM_STATUS;
+				else process.env.PI_PROGRAM_STATUS = previous;
+			}
+		});
+	}
 
 	it("activates Kitty mode for non-zero negotiated flags", () => {
 		const harness = setupNegotiation();
