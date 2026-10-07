@@ -48,6 +48,8 @@ export interface RemoteInfo {
 	/** Windows: per-drive working directories (`C:` → `C:\\work`) of the `=C:` variables. */
 	driveCwds: Record<string, string>;
 	pid: number;
+	/** Keyed exec persists independently of a connection; absent on protocol v1 and unsupported platforms. */
+	keyedExec?: boolean;
 }
 
 export interface ConnectionOptions {
@@ -199,7 +201,7 @@ export class Connection {
 		return this.#send(session, op, json, options);
 	}
 
-	/** Stop the daemon; it kills everything it started. */
+	/** Stop the daemon; keyless commands die, while keyed commands detach and retain their lease. */
 	close(): void {
 		this.#closed = true;
 		if (this.#session) this.#teardown(this.#session, closed());
@@ -293,8 +295,8 @@ export class Connection {
 		}, PING_INTERVAL_MS);
 		session.timer.unref();
 		try {
-			const { json } = await Promise.race([this.#send(session, "hello", { protocol: 1 }, {}), failed]);
-			if (json.protocol !== 1) throw lost(`Unsupported protocol ${json.protocol}`);
+			const { json } = await Promise.race([this.#send(session, "hello", { protocol: 2 }, {}), failed]);
+			if (json.protocol !== 1 && json.protocol !== 2) throw lost(`Unsupported protocol ${json.protocol}`);
 			return { info: json as unknown as RemoteInfo, session };
 		} catch (error) {
 			this.#teardown(session, error instanceof Error ? error : lost(String(error)));

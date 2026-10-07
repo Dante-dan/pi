@@ -7,7 +7,7 @@ export {
 	type Reply,
 	type RequestOptions,
 } from "./connection.ts";
-export { RemoteExecutionEnv, type RemoteExecutionEnvOptions } from "./remote-env.ts";
+export { RemoteExecutionEnv, type RemoteExecutionEnvOptions, type RemoteShellExecOptions } from "./remote-env.ts";
 export {
 	acceptHostKey,
 	connectSsh,

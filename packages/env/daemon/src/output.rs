@@ -69,6 +69,11 @@ impl Output {
 
     /// Write frames to `writer` until closed or a write fails.
     pub fn run(&self, writer: &mut impl Write) {
+        self.run_frames(|frame| frame::write_frame(writer, frame));
+    }
+
+    /// The detached exec shim persists frames instead of sending them to a connection.
+    pub fn run_frames(&self, mut write: impl FnMut(&Frame) -> std::io::Result<()>) {
         loop {
             let (frame, unsent) = {
                 let mut queues = self.queues.lock().unwrap();
@@ -86,7 +91,7 @@ impl Output {
                     queues = self.queued.wait(queues).unwrap();
                 }
             };
-            let failed = frame::write_frame(writer, &frame).is_err();
+            let failed = write(&frame).is_err();
             if let Some(counter) = unsent {
                 counter.fetch_sub(1, Ordering::SeqCst);
             }

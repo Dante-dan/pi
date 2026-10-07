@@ -26,7 +26,14 @@ import {
 	type WatchChange,
 	type WatchTarget,
 } from "@earendil-works/pi-durable/env";
-import { type Connection, type Json, RemoteError, type RemoteInfo } from "./connection.ts";
+import {
+	type Connection,
+	isConnectionLost,
+	type Json,
+	RemoteError,
+	type RemoteInfo,
+	type Reply,
+} from "./connection.ts";
 import { abortResult, toFileError } from "./errors.ts";
 import { RemoteWatcher, type RemoteWatchOptions } from "./watch.ts";
 
@@ -55,6 +62,14 @@ export interface RemoteExecutionEnvOptions {
 	shellEnv?: Record<string, string>;
 	/** How the daemon watches, like `NodeExecutionEnv`'s `watch` option. */
 	watch?: RemoteWatchOptions;
+}
+
+/** Opt-in daemon persistence. Durable's generic Shell contract and tool replay policy remain unchanged. */
+export interface RemoteShellExecOptions extends ShellExecOptions {
+	/** Stable identity of this execution; reuse attaches, and a changed specification fails. Requires window. */
+	key?: string;
+	/** How long the detached command may run with no client; defaults to one hour. */
+	leaseMs?: number;
 }
 
 /** An info record from the daemon. */
@@ -357,6 +372,7 @@ export class RemoteExecutionEnv implements ExecutionEnv {
 	readonly #watchOptions: RemoteWatchOptions;
 	/** Running commands this environment started, for `cleanup()`. */
 	readonly #running = new Map<number, number>();
+	readonly #keyedCleanup = new Set<() => void>();
 
 	constructor(options: RemoteExecutionEnvOptions) {
 		this.id = options.id;
@@ -833,7 +849,7 @@ export class RemoteExecutionEnv implements ExecutionEnv {
 
 	async exec(
 		command: string | readonly string[],
-		options: ShellExecOptions | undefined,
+		options: RemoteShellExecOptions | undefined,
 		context: Context,
 	): Promise<Result<ShellExecResult, ExecutionError>> {
 		const signal = context.abortSignal;
@@ -864,44 +880,76 @@ export class RemoteExecutionEnv implements ExecutionEnv {
 		let callbackError: ExecutionError | undefined;
 		let settled = false;
 		let running: number | undefined;
+		let offset: unknown;
+		let cleaned = false;
+		const cleanup = () => {
+			cleaned = true;
+			const session = running === undefined ? undefined : this.#running.get(running);
+			if (running !== undefined && session !== undefined) this.connection.kill(running, session);
+		};
+		if (options?.key !== undefined) this.#keyedCleanup.add(cleanup);
 		const controller = new AbortController();
 		const onAbort = () => controller.abort();
 		signal?.addEventListener("abort", onAbort, { once: true });
 		try {
-			const { json } = await this.connection.request(
-				"exec",
-				{
-					...(typeof command === "string" ? { command } : { argv: [...command] }),
-					cwd,
-					env,
-					inheritEnv,
-					...(this.#shellPath === undefined ? {} : { shellPath: this.#shellPath }),
-					...(timeout === undefined ? {} : { timeoutMs: timeout * 1000 }),
-					...(options?.spill === undefined ? {} : { spill: options.spill }),
-					...(options?.window === undefined ? {} : { window: options.window }),
-				},
-				{
-					signal: controller.signal,
-					onStart: (requestId, session) => {
-						running = requestId;
-						this.#running.set(requestId, session);
+			const request = async () => {
+				if (options?.key !== undefined && !(await this.connection.info()).keyedExec) {
+					throw new RemoteError({ code: "ENOTSUP", message: "This daemon does not support keyed exec" });
+				}
+				return this.connection.request(
+					"exec",
+					{
+						...(typeof command === "string" ? { command } : { argv: [...command] }),
+						cwd,
+						env,
+						inheritEnv,
+						...(this.#shellPath === undefined ? {} : { shellPath: this.#shellPath }),
+						...(timeout === undefined ? {} : { timeoutMs: timeout * 1000 }),
+						...(options?.spill === undefined ? {} : { spill: options.spill }),
+						...(options?.window === undefined ? {} : { window: options.window }),
+						...(options?.key === undefined
+							? {}
+							: { key: options.key, ...(offset === undefined ? {} : { offset }) }),
+						...(options?.leaseMs === undefined ? {} : { leaseMs: options.leaseMs }),
 					},
-					onEvent: (event, payload) => {
-						if (settled || callbackError !== undefined || event.kind !== "output") return;
-						const text = Buffer.from(payload.buffer, payload.byteOffset, payload.length).toString("utf8");
-						if (text === "" || options?.onOutput === undefined) return;
-						const info: ShellOutputInfo = { stream: event.stream === "stderr" ? "stderr" : "stdout" };
-						if (event.skipped !== undefined) info.skipped = event.skipped as ShellOutputSkip;
-						try {
-							options.onOutput(text, context, info);
-						} catch (error) {
-							const cause = error instanceof Error ? error : new Error(String(error));
-							callbackError = new ExecutionError("callback_error", cause.message, cause);
-							controller.abort();
-						}
+					{
+						signal: controller.signal,
+						onStart: (requestId, session) => {
+							if (running !== undefined) this.#running.delete(running);
+							running = requestId;
+							this.#running.set(requestId, session);
+							// onStart runs before the request is written; cancel must follow its registration.
+							if (cleaned) queueMicrotask(() => this.connection.kill(requestId, session));
+						},
+						onEvent: (event, payload) => {
+							if (settled || callbackError !== undefined || event.kind !== "output") return;
+							if (event.offset !== undefined) offset = event.offset;
+							const text = Buffer.from(payload.buffer, payload.byteOffset, payload.length).toString("utf8");
+							if (text === "" || options?.onOutput === undefined) return;
+							const info: ShellOutputInfo = { stream: event.stream === "stderr" ? "stderr" : "stdout" };
+							if (event.skipped !== undefined) info.skipped = event.skipped as ShellOutputSkip;
+							try {
+								options.onOutput(text, context, info);
+							} catch (error) {
+								const cause = error instanceof Error ? error : new Error(String(error));
+								callbackError = new ExecutionError("callback_error", cause.message, cause);
+								controller.abort();
+							}
+						},
 					},
-				},
-			);
+				);
+			};
+			let reply: Reply;
+			for (;;) {
+				try {
+					reply = await request();
+					break;
+				} catch (error) {
+					if (options?.key === undefined || !isConnectionLost(error) || controller.signal.aborted) throw error;
+					await new Promise<void>((resolve) => setTimeout(resolve, 300));
+				}
+			}
+			const { json } = reply;
 			if (callbackError) return err(callbackError);
 			return ok({
 				exitCode: json.exitCode as number,
@@ -925,6 +973,7 @@ export class RemoteExecutionEnv implements ExecutionEnv {
 		} finally {
 			settled = true;
 			signal?.removeEventListener("abort", onAbort);
+			this.#keyedCleanup.delete(cleanup);
 			if (running !== undefined) this.#running.delete(running);
 		}
 	}
@@ -932,6 +981,7 @@ export class RemoteExecutionEnv implements ExecutionEnv {
 	async cleanup(_context: Context): Promise<void> {
 		// Kill without aborting, so the commands settle with their killed status, as `NodeExecutionEnv` does.
 		for (const [id, session] of this.#running) this.connection.kill(id, session);
+		for (const cleanup of this.#keyedCleanup) cleanup();
 		this.#running.clear();
 	}
 }

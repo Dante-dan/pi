@@ -1,6 +1,6 @@
 # pi-env wire protocol
 
-Version 1. The client starts `pi-env serve --token <hex>` (over `ssh`, or directly in tests) and talks to it over the
+Version 2. The client starts `pi-env serve --token <hex>` (over `ssh`, or directly in tests) and talks to it over the
 process's stdin and stdout. stderr is diagnostic text for logs only.
 
 ## Sync
@@ -59,14 +59,14 @@ pipe would.
 
 ## Liveness
 
-Each side sends `ping` every 5 seconds. The daemon kills every process group it started and exits after 30 seconds
-without receiving any bytes, or when stdin ends. A dropped connection therefore stops remote commands. The client
+Each side sends `ping` every 5 seconds. The daemon kills every keyless process group it started and exits after 30 seconds
+without receiving any bytes, or when stdin ends. A dropped connection therefore stops keyless commands. The client
 fails requests of a lost connection with `{ code: "unknown", lost: true }` and starts a new daemon on the next request;
 handles belong to the daemon that opened them, so requests on them fail instead of reaching the new one.
 
 ## Operations
 
-`hello { protocol }` → `{ protocol, version, os, arch, home, tmpdir, cwd, driveCwds, pid }`. The first request.
+`hello { protocol }` → `{ protocol, version, os, arch, home, tmpdir, cwd, driveCwds, pid, keyedExec }`. The first request.
 `version` is the npm package version the daemon shipped with; `os` and `arch` are Rust's `std::env::consts` values;
 `tmpdir` follows the remote Node's `os.tmpdir()` rules; `cwd` and `driveCwds` (Windows' `=C:` variables) are what
 Node's `path.resolve` falls back to for drive-relative paths.
@@ -106,6 +106,36 @@ caller's commits, at most one output frame per command is unsent, and output fol
 replaced by `skipped { bytes, newlines, endsWithNewline }` on the next event, which carries all output after it
 (`ShellOutputInfo.skipped`). The result is `{ exitCode, spillPath? }`; failures are errors with codes `timeout` or
 `aborted` (carrying `spillPath`), `shell_unavailable`, `spawn_error`, or `unknown` (spill failure).
+
+### Keyed exec (Unix)
+
+An optional nonempty `key` makes `exec` connection-independent. `hello.keyedExec` advertises support; Windows does
+not support it. Keyed requests require a valid output `window`. The TypeScript client exposes `key` and `leaseMs`
+through `RemoteShellExecOptions`; the generic Durable Shell capability and replay-safe tools are a later change.
+
+The first request claims `~/.pi/env/jobs/<sha256(key)>/spec.json` under an exclusive file lock, publishes a durable
+start marker, then transfers the lock to a detached `pi-env shim`. Concurrent requests attach to the same execution.
+Changing any specification field under the same key fails with `EINVAL`; the key, operation and output cursor are
+excluded from specification comparison. An uncertain launch or dead shim produces `lost` instead of a second spawn.
+The result of a lost job means the command may have partially run. Reboot survival means retaining this identity;
+commands do not continue across a reboot. User-session teardown policies such as systemd-logind `KillUserProcesses`
+can also kill the shim, requiring the host's session policy to permit detached processes (for example, lingering).
+
+The shim records stream-tagged output frames and a bounded checkpoint. Fresh attach sends a skip count followed by
+the tail and live output, without scanning the whole log. Tail cuts stay on UTF-8 character boundaries and retain
+slightly more than one byte/line window, so a skipped prefix cannot belong in the caller's window. Each output event
+includes an opaque `offset { log, bytes, newlines }`; reattach supplies the last received offset. Within a keyed
+`RemoteExecutionEnv.exec`, a lost connection is retried with that cursor, without duplicate received output. The
+complete raw output is preserved in the remote job directory and returned as `spillPath` when nonempty.
+
+`leaseMs` is a positive integer, defaulting to one hour. An attached client renews the lease and holds an observation lock in its serving process, so a delayed heartbeat cannot expire an attached job; after the final client
+detaches, expiry kills the command and retains an `aborted` result. Timeout remains relative to the original launch.
+Explicit cancel and `cleanup()` still kill the command; closing the connection detaches keyed jobs. Terminal jobs
+unobserved for seven days are collected opportunistically, at most hourly when another keyed exec arrives. Reusing
+a collected key starts a new job, so callers must not use the retention period as a long-term replay guarantee.
+Collection waits for active attachments and does not remove running or lost jobs. There is no release operation.
+
+## Watching
 
 `watch { targets, mode?, pollIntervalMs?, maxDirectories? }` runs Durable's `NodeFileWatcher` in the daemon. `targets`
 are `{ path, recursive, exclude: { hidden, names } }`. Once coverage is established, an event `{ kind: "ready", mode }`

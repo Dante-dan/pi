@@ -6,6 +6,8 @@ mod errors;
 mod exec;
 mod frame;
 mod fs;
+#[cfg(unix)]
+mod jobs;
 mod output;
 mod scan;
 mod sys;
@@ -27,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PROTOCOL: u64 = 1;
+const PROTOCOL: u64 = 2;
 /// The npm package version this daemon ships with (build.rs).
 const VERSION: &str = env!("PI_ENV_VERSION");
 const PING_INTERVAL: Duration = Duration::from_secs(5);
@@ -151,6 +153,7 @@ impl Server {
                 "cwd": sys::cwd(),
                 "driveCwds": sys::drive_cwds(),
                 "pid": std::process::id(),
+                "keyedExec": cfg!(unix),
             }))),
             "lstat" => plain(fs::lstat(field(json, "path")?)),
             "realpath" => plain(fs::realpath(field(json, "path")?)),
@@ -243,6 +246,19 @@ impl Server {
                     .unwrap()
                     .remove(&number(json, "handle")?);
                 plain(Ok(json!({})))
+            }
+            "exec" if json.get("key").is_some() => {
+                #[cfg(unix)]
+                {
+                    plain(jobs::run(id, json, &self.output, control))
+                }
+                #[cfg(not(unix))]
+                {
+                    Err(Failure::new(
+                        "ENOTSUP",
+                        "keyed exec is not available on this platform",
+                    ))
+                }
             }
             "exec" => plain(exec::run(
                 id,
@@ -491,6 +507,20 @@ fn serve(token: &str) -> io::Result<()> {
 fn main() {
     let args: Vec<String> = env::args().collect();
     match args.get(1).map(String::as_str) {
+        #[cfg(unix)]
+        Some("shim") => {
+            let result = args
+                .get(2)
+                .zip(args.get(3))
+                .ok_or_else(|| io::Error::other("shim needs a job directory and lock descriptor"))
+                .and_then(|(directory, descriptor)| {
+                    let descriptor = descriptor.parse::<i32>().map_err(io::Error::other)?;
+                    jobs::shim(std::path::Path::new(directory), descriptor)
+                });
+            if result.is_err() {
+                std::process::exit(1);
+            }
+        }
         Some("serve") => {
             let token = args
                 .iter()
