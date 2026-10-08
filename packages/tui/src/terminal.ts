@@ -375,6 +375,9 @@ export class ProcessTerminal implements Terminal {
 
 	private scheduleKeyboardProtocolNegotiationBufferFlush(): void {
 		if (!this.keyboardProtocolNegotiationBuffer || this.keyboardProtocolBufferFlushTimer) return;
+		// Private CSI replies cannot be ordinary keyboard input. Keep their prefix until
+		// the final byte arrives, even when the transport pauses between reads.
+		if (this.keyboardProtocolNegotiationBuffer.startsWith("\x1b[?")) return;
 		this.keyboardProtocolBufferFlushTimer = setTimeout(() => {
 			this.keyboardProtocolBufferFlushTimer = undefined;
 			this.flushKeyboardProtocolNegotiationBufferAsInput();

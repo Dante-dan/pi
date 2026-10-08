@@ -214,6 +214,33 @@ describe("ProcessTerminal Kitty keyboard protocol negotiation", () => {
 		}
 	});
 
+	// #10657: DA1 tails must stay attached to the prefix beyond both parser timeouts.
+	it("reassembles delayed DA1 replies for keyboard and color queries", () => {
+		mock.timers.enable({ apis: ["setTimeout"] });
+		const harness = setupNegotiation();
+		const reply = "\x1b[?61;6;7;22;23;24;28;32;42c";
+		try {
+			for (const chunk of ["\x1b[?61;6;", "7;22;23;", "24;28;32", ";42c"]) {
+				harness.send(chunk);
+				mock.timers.tick(200);
+				assert.equal(harness.getInput(), undefined);
+			}
+			assert.equal(harness.terminal.modifyOtherKeysActive, true);
+			for (const chunk of ["\x1b[?61;6;", "7;22;23;", "24;28;32"]) {
+				harness.send(chunk);
+				mock.timers.tick(200);
+				assert.equal(harness.getInput(), undefined);
+			}
+			harness.send(";42c");
+			assert.equal(harness.getInput(), reply);
+			harness.send("x");
+			assert.equal(harness.getInput(), "x");
+		} finally {
+			harness.cleanup();
+			mock.timers.reset();
+		}
+	});
+
 	it("tracks split Kitty confirmation", () => {
 		mock.timers.enable({ apis: ["setTimeout"] });
 		const harness = setupNegotiation();
