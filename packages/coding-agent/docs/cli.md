@@ -34,9 +34,12 @@ With terminal stdin and stdout, Pi opens the terminal UI unless `--print`, `--mo
 | `message` | Provide an initial prompt |
 | `@path` | Include a text file or image in the first prompt |
 | Piped stdin | Prepend its contents to the first prompt |
+| `--no-stdin` | Ignore piped prompt input without waiting for EOF; does not affect RPC input |
 | `--` | Stop option parsing so a prompt can begin with `-` |
 
 Pi resolves `@path` from the current working directory. The working directory also controls project configuration, resource discovery, and session grouping.
+
+By default, piped prompt input is read until EOF, even when a message is supplied on the command line. When launching Pi from a process that leaves its stdin pipe open, use `pi --no-stdin --print "Summarize this repository"` to use only command-line messages and `@files`. This option does not change how redirected streams select print mode, and RPC mode still reads commands from stdin.
 
 `--print` controls whether Pi runs once and exits. `--mode` selects the output interface. `--mode text` does not force one-shot execution when stdin and stdout are terminals; use `--print` for that behavior.
 
