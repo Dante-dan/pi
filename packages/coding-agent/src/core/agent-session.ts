@@ -615,7 +615,7 @@ export class AgentSession {
 	private _modelForMessage(message: AssistantMessage): Model<any> | undefined {
 		const model = this.model;
 		if (model && isVirtualModel(model)) return this._modelRuntime.getPhysicalModel(message.provider, message.model);
-		return model?.provider === message.provider && model.id === message.model ? model : undefined;
+		return model?.provider === message.provider && model.id === message.model ? this._limitsModel() : undefined;
 	}
 
 	/**
@@ -638,7 +638,10 @@ export class AgentSession {
 
 	/** The model whose limits apply to the conversation. */
 	private _limitsModel(): Model<any> | undefined {
-		return this.routedModel?.model ?? this.model;
+		const model = this.model;
+		if (!model || isVirtualModel(model)) return this.routedModel?.model ?? model;
+		// A background catalog refresh can replace the selected model's cached limits.
+		return this._modelRuntime.getPhysicalModel(model.provider, model.id) ?? model;
 	}
 
 	/**
@@ -776,8 +779,12 @@ export class AgentSession {
 	private async _compactBeforeNextAssistantResponse(context: AgentContext): Promise<AgentContext> {
 		const projection = this.sessionManager.buildSessionProjection();
 		// A virtual selection is checked in prepareRequest, against the model the request is routed to.
-		const model = this.model;
-		if (!model || isVirtualModel(model) || !this._exceedsCompactionThreshold(model, projection)) {
+		const model = this._limitsModel();
+		if (
+			!model ||
+			(this.model && isVirtualModel(this.model)) ||
+			!this._exceedsCompactionThreshold(model, projection)
+		) {
 			return { ...context, messages: projection.messages };
 		}
 		await this._runAutoCompaction("threshold", false);
