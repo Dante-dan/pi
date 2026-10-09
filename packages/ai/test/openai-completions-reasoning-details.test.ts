@@ -115,6 +115,42 @@ describe("openai-completions reasoning_details streaming", () => {
 		mockState.payloads = [];
 	});
 
+	// Regression test for #10157: Gemini's OpenAI-compatible endpoint puts the
+	// opaque signature on an individual tool call, including signature-only deltas.
+	it("preserves Gemini tool-call signatures through streaming and same-model replay", async () => {
+		mockState.chunkSets = [
+			[
+				toolCallChunk(),
+				chunk({
+					tool_calls: [{ index: 0, extra_content: { google: { thought_signature: "google-signature" } } }],
+				}),
+				chunk({}, "tool_calls"),
+			],
+			[chunk({ content: "ok" }), chunk({}, "stop")],
+			[chunk({ content: "ok" }), chunk({}, "stop")],
+		];
+		const assistantMessage = await runOpenAICompletionsStream();
+		expect(assistantMessage.content.find((block) => block.type === "toolCall")?.thoughtSignature).toBe(
+			"google-signature",
+		);
+		await runOpenAICompletionsStream([assistantMessage]);
+		const payload = mockState.payloads[1] as {
+			messages: Array<{ role: string; tool_calls?: Array<{ extra_content?: unknown }> }>;
+		};
+		expect(payload.messages.find((message) => message.role === "assistant")?.tool_calls?.[0].extra_content).toEqual({
+			google: { thought_signature: "google-signature" },
+		});
+		await streamOpenAICompletions(
+			{ ...model(), id: "other-model" },
+			normalizeContext({ messages: [assistantMessage], tools: [readTool] }),
+			{ apiKey: "test" },
+		).result();
+		const crossModelPayload = mockState.payloads[2] as typeof payload;
+		expect(
+			crossModelPayload.messages.find((message) => message.role === "assistant")?.tool_calls?.[0].extra_content,
+		).toBeUndefined();
+	});
+
 	it("preserves reasoning_details in the thinking signature", async () => {
 		mockState.chunkSets = [
 			[chunk({ reasoning_details: [reasoningDetail] }), toolCallChunk(), chunk({}, "tool_calls")],

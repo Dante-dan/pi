@@ -291,6 +291,10 @@ type ChatCompletionToolWithCacheControl = OpenAI.Chat.Completions.ChatCompletion
 	cache_control?: OpenAICompatCacheControl;
 };
 
+type GoogleToolCallExtraContent = {
+	extra_content?: { google?: { thought_signature?: string } };
+};
+
 function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEnv): CacheRetention {
 	if (cacheRetention) {
 		return cacheRetention;
@@ -398,7 +402,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				type?: string;
 				function?: { name?: string; arguments?: string };
 				custom?: { name?: string; input?: string };
-			};
+			} & GoogleToolCallExtraContent;
 
 			let textBlock: TextContent | null = null;
 			let thinkingBlock: ThinkingContent | null = null;
@@ -647,6 +651,10 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 							const name = toolCall.function?.name ?? toolCall.custom?.name;
 							if (!block.name && name) {
 								block.name = name;
+							}
+							const thoughtSignature = toolCall.extra_content?.google?.thought_signature;
+							if (typeof thoughtSignature === "string" && thoughtSignature.length > 0) {
+								block.thoughtSignature = thoughtSignature;
 							}
 
 							let delta = "";
@@ -1358,27 +1366,32 @@ export function convertMessages(
 			}
 
 			if (toolCalls.length > 0) {
-				assistantMsg.tool_calls = toolCalls.map((tc): ChatCompletionMessageToolCall => {
-					const customInputProperty = options?.grammarToolInputProperties?.get(tc.name);
-					if (customInputProperty !== undefined) {
+				assistantMsg.tool_calls = toolCalls.map(
+					(tc): ChatCompletionMessageToolCall & GoogleToolCallExtraContent => {
+						const customInputProperty = options?.grammarToolInputProperties?.get(tc.name);
+						if (customInputProperty !== undefined) {
+							return {
+								id: tc.id,
+								type: "custom",
+								custom: {
+									name: tc.name,
+									input: sanitizeSurrogates(getGrammarToolInput(tc.name, tc.arguments, customInputProperty)),
+								},
+							};
+						}
 						return {
 							id: tc.id,
-							type: "custom",
-							custom: {
+							type: "function",
+							...(tc.thoughtSignature && !parseLegacyEncryptedReasoningDetail(tc.thoughtSignature)
+								? { extra_content: { google: { thought_signature: tc.thoughtSignature } } }
+								: {}),
+							function: {
 								name: tc.name,
-								input: sanitizeSurrogates(getGrammarToolInput(tc.name, tc.arguments, customInputProperty)),
+								arguments: JSON.stringify(tc.arguments),
 							},
 						};
-					}
-					return {
-						id: tc.id,
-						type: "function",
-						function: {
-							name: tc.name,
-							arguments: JSON.stringify(tc.arguments),
-						},
-					};
-				});
+					},
+				);
 			}
 			if (preservedReasoningDetails) {
 				assistantMsg.reasoning_details = preservedReasoningDetails;
