@@ -1820,6 +1820,7 @@ export class AgentSession {
 	// =========================================================================
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+		this._assertCanStartAgentRun();
 		this._agentRunAbortRequested = false;
 		// Compaction before the prompt may have scheduled a retry; the new prompt replaces it.
 		this._failedResponse = undefined;
@@ -1847,6 +1848,14 @@ export class AgentSession {
 			this._flushPendingBashMessages();
 			this._flushPendingCustomMessages();
 			await this._emitAgentSettled();
+		}
+	}
+
+	private _assertCanStartAgentRun(): void {
+		if (this._isAgentRunActive || this.agent.state.isStreaming) {
+			throw new Error(
+				"Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion.",
+			);
 		}
 	}
 
@@ -2073,6 +2082,9 @@ export class AgentSession {
 		if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
 
 		const normalized = await this._normalizePromptImages(currentImages);
+		// Another prompt may have started during preflight. Reject before consuming pending
+		// messages, changing the active run's loadout, or acknowledging a started RPC prompt.
+		this._assertCanStartAgentRun();
 		const userText = normalized.hints.length > 0 ? `${expandedText}\n\n${normalized.hints.join("\n")}` : expandedText;
 
 		// Build messages only after hooks and image normalization have completed.

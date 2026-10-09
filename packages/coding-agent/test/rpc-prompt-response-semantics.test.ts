@@ -168,10 +168,27 @@ async function startRpcMode(options: Parameters<typeof createRuntimeHost>[0]): P
 	rpcIo.lineHandler = undefined;
 
 	const { runtimeHost, cleanup } = await createRuntimeHost(options);
+	const sigtermListeners = new Set(process.listeners("SIGTERM"));
+	const sighupListeners = new Set(process.listeners("SIGHUP"));
+	const inputEndListeners = new Set(process.stdin.listeners("end"));
 	void runRpcMode(runtimeHost);
 	await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
-	return { lineHandler: rpcIo.lineHandler!, cleanup };
+	return {
+		lineHandler: rpcIo.lineHandler!,
+		cleanup: async () => {
+			await cleanup();
+			for (const listener of process.listeners("SIGTERM")) {
+				if (!sigtermListeners.has(listener)) process.off("SIGTERM", listener);
+			}
+			for (const listener of process.listeners("SIGHUP")) {
+				if (!sighupListeners.has(listener)) process.off("SIGHUP", listener);
+			}
+			for (const listener of process.stdin.listeners("end")) {
+				if (!inputEndListeners.has(listener)) process.stdin.off("end", listener);
+			}
+		},
+	};
 }
 
 describe("RPC prompt response semantics", () => {
@@ -220,6 +237,67 @@ describe("RPC prompt response semantics", () => {
 	});
 
 	// #9098: a successful prompt may start an agent run or be consumed by an extension.
+	// #10606: overlapping preflight must not acknowledge a lost prompt or settle another run.
+	it.each([undefined, "steer", "followUp"] as const)(
+		"rejects a prompt overtaken during preflight with streamingBehavior %s",
+		async (streamingBehavior) => {
+			let releasePreflight!: () => void;
+			const preflight = new Promise<void>((resolve) => {
+				releasePreflight = resolve;
+			});
+			let blocked = false;
+			const { lineHandler, cleanup } = await startRpcMode({
+				withAuth: true,
+				responseDelayMs: 500,
+				extensionsResult: await createTestExtensionsResult([
+					(pi) => {
+						pi.on("before_agent_start", async (event) => {
+							if (event.prompt === "Blocked") {
+								blocked = true;
+								await preflight;
+							}
+						});
+					},
+				]),
+			});
+
+			try {
+				lineHandler(JSON.stringify({ id: "blocked", type: "prompt", message: "Blocked", streamingBehavior }));
+				await vi.waitFor(() => expect(blocked).toBe(true));
+				lineHandler(JSON.stringify({ id: "winner", type: "prompt", message: "Winner" }));
+				await vi.waitFor(() => expect(getPromptResponses(rpcIo.outputLines, "winner")).toHaveLength(1));
+				releasePreflight();
+				await vi.waitFor(() => {
+					expect(getPromptResponses(rpcIo.outputLines, "blocked")).toEqual([
+						{
+							id: "blocked",
+							type: "response",
+							command: "prompt",
+							success: false,
+							error: expect.stringContaining("Agent is already processing a prompt"),
+						},
+					]);
+				});
+				expect(parseOutputLines(rpcIo.outputLines).filter((line) => line.type === "agent_settled")).toHaveLength(0);
+				lineHandler(JSON.stringify({ id: "state", type: "get_state" }));
+				await vi.waitFor(() => {
+					expect(parseOutputLines(rpcIo.outputLines)).toContainEqual(
+						expect.objectContaining({ id: "state", data: expect.objectContaining({ isStreaming: true }) }),
+					);
+				});
+				await vi.waitFor(() => {
+					expect(parseOutputLines(rpcIo.outputLines).filter((line) => line.type === "agent_settled")).toHaveLength(
+						1,
+					);
+				});
+				expect(getPromptResponses(rpcIo.outputLines, "blocked")).toHaveLength(1);
+			} finally {
+				releasePreflight();
+				await cleanup();
+			}
+		},
+	);
+
 	it("emits one started response when prompt preflight succeeds", async () => {
 		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
 
