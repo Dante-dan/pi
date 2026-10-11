@@ -387,6 +387,7 @@ export class AgentSession {
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
 	private _agentRunAbortRequested = false;
+	private _agentRunAbortGeneration = 0;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
 
@@ -431,6 +432,8 @@ export class AgentSession {
 	private _isBeforeSettle = false;
 	private _abortDuringBeforeSettle = false;
 	private _isEmittingAgentSettled = false;
+	/** Includes awaited settled handlers and their nested deferred runs. */
+	private _pendingAgentSettlements = 0;
 	private readonly _deferredSettledActions: Array<() => Promise<void>> = [];
 
 	private _resourceLoader: ResourceLoader;
@@ -1066,7 +1069,7 @@ export class AgentSession {
 	}
 
 	private _resolveIdleWaitIfIdle(): void {
-		if (!this.isIdle || !this._resolveIdleWait) {
+		if (!this.isIdle || this._pendingAgentSettlements > 0 || !this._resolveIdleWait) {
 			return;
 		}
 		const resolve = this._resolveIdleWait;
@@ -1078,25 +1081,27 @@ export class AgentSession {
 	private async _emitAgentSettled(): Promise<void> {
 		this._cacheWarmer?.onAgentSettled();
 		this._isAgentRunActive = false;
-		this._isEmittingAgentSettled = true;
+		this._pendingAgentSettlements++;
+		const abortGeneration = this._agentRunAbortGeneration;
 		try {
-			const aborted = this._agentRunAbortRequested;
-			await this._extensionRunner.emit({ type: "agent_settled", aborted });
-			this._emit({ type: "agent_settled", aborted });
-		} finally {
-			this._isEmittingAgentSettled = false;
-		}
-
-		const deferred = this._deferredSettledActions.splice(0);
-		if (deferred.length > 0) {
+			this._isEmittingAgentSettled = true;
 			try {
-				for (const action of deferred) await action();
+				const aborted = this._agentRunAbortRequested;
+				await this._extensionRunner.emit({ type: "agent_settled", aborted });
+				this._emit({ type: "agent_settled", aborted });
 			} finally {
-				this._resolveIdleWaitIfIdle();
+				this._isEmittingAgentSettled = false;
 			}
-			return;
+
+			const deferred = this._deferredSettledActions.splice(0);
+			for (const action of deferred) {
+				if (this._agentRunAbortGeneration !== abortGeneration) break;
+				await action();
+			}
+		} finally {
+			this._pendingAgentSettlements--;
+			this._resolveIdleWaitIfIdle();
 		}
-		this._resolveIdleWaitIfIdle();
 	}
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
@@ -2432,9 +2437,11 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
-		if (this._isAgentRunActive) {
+		if (this._isAgentRunActive || this._pendingAgentSettlements > 0) {
 			this._agentRunAbortRequested = true;
+			this._agentRunAbortGeneration++;
 		}
+		this._deferredSettledActions.length = 0;
 		this.abortRetry();
 		this.abortCompaction();
 		this.abortBranchSummary();
@@ -2444,7 +2451,7 @@ export class AgentSession {
 	}
 
 	async waitForIdle(): Promise<void> {
-		if (this.isIdle) {
+		if (this.isIdle && this._pendingAgentSettlements === 0) {
 			return;
 		}
 		await this._getIdleWaitPromise();
@@ -2762,7 +2769,8 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
-		await this.abort();
+		// Settled handlers may await compaction; waiting for their own settlement would deadlock.
+		if (!this.isIdle) await this.abort();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
 		let fromExtension = false;
