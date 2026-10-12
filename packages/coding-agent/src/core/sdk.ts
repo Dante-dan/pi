@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ModelsSimpleStreamOptions } from "@earendil-works/pi-ai";
+import { getCurrentSystemMessage, type ModelsSimpleStreamOptions } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -291,7 +291,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		: (options.tools ?? (options.noTools === "all" ? [] : undefined));
 	const excludedToolNames = options.excludeTools;
 	const isExcludedTool = excludedToolNames ? createToolNameMatcher(excludedToolNames) : undefined;
-	const initialActiveToolNames = (selectedToolNames ?? defaultToolNames).filter((name) => !isExcludedTool?.(name));
+	// Let the session restore the recorded loadout unless the caller overrides its selection.
+	// Exclusions still restrict restored tools through excludedToolNames.
+	const initialActiveToolNames =
+		getCurrentSystemMessage(existingSession.messages) && options.tools === undefined && options.noTools === undefined
+			? undefined
+			: (selectedToolNames ?? defaultToolNames).filter((name) => !isExcludedTool?.(name));
 
 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
