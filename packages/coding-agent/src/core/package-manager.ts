@@ -36,6 +36,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
+import lockfile from "proper-lockfile";
 import { gt, maxSatisfying, rcompare, satisfies, valid, validRange } from "semver";
 import { CONFIG_DIR_NAME } from "../config.ts";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
@@ -1216,8 +1217,10 @@ export class DefaultPackageManager implements PackageManager {
 
 	private async installNpmBatch(specs: string[], scope: InstalledSourceScope): Promise<void> {
 		const installRoot = this.getNpmInstallRoot(scope, false);
-		this.ensureNpmProject(installRoot);
-		await this.runNpmCommand(this.getNpmInstallArgs(specs, installRoot));
+		await this.withNpmInstallLock(installRoot, async () => {
+			this.ensureNpmProject(installRoot);
+			await this.runNpmCommand(this.getNpmInstallArgs(specs, installRoot));
+		});
 	}
 
 	async checkForAvailableUpdates(): Promise<PackageUpdate[]> {
@@ -1397,7 +1400,7 @@ export class DefaultPackageManager implements PackageManager {
 
 	private async installParsedSource(parsed: ParsedSource, scope: SourceScope): Promise<void> {
 		if (parsed.type === "npm") {
-			await this.installNpm(parsed, scope, scope === "temporary");
+			await this.installNpm(parsed, scope, scope === "temporary", true);
 			return;
 		}
 		if (parsed.type === "git") {
@@ -1871,10 +1874,35 @@ export class DefaultPackageManager implements PackageManager {
 		return ["install", ...specs, "--prefix", installRoot, "--legacy-peer-deps"];
 	}
 
-	private async installNpm(source: NpmSource, scope: SourceScope, temporary: boolean): Promise<void> {
+	private async withNpmInstallLock(installRoot: string, operation: () => Promise<void>): Promise<void> {
+		mkdirSync(installRoot, { recursive: true });
+		// Lock the whole prefix: installing different packages still mutates the same dependency tree.
+		// Renewal keeps long installs live; abandoned locks become available after a minute.
+		const release = await lockfile.lock(installRoot, {
+			stale: 60000,
+			update: 10000,
+			retries: { retries: 300, factor: 1, minTimeout: 1000, maxTimeout: 1000 },
+		});
+		try {
+			await operation();
+		} finally {
+			await release();
+		}
+	}
+
+	private async installNpm(
+		source: NpmSource,
+		scope: SourceScope,
+		temporary: boolean,
+		onlyIfMissing = false,
+	): Promise<void> {
 		const installRoot = this.getNpmInstallRoot(scope, temporary);
-		this.ensureNpmProject(installRoot);
-		await this.runNpmCommand(this.getNpmInstallArgs([source.spec], installRoot));
+		await this.withNpmInstallLock(installRoot, async () => {
+			const installedPath = join(installRoot, "node_modules", source.name);
+			if (onlyIfMissing && (await this.installedNpmMatchesConfiguredVersion(source, installedPath))) return;
+			this.ensureNpmProject(installRoot);
+			await this.runNpmCommand(this.getNpmInstallArgs([source.spec], installRoot));
+		});
 	}
 
 	private async uninstallNpm(source: NpmSource, scope: SourceScope): Promise<void> {
@@ -1882,16 +1910,18 @@ export class DefaultPackageManager implements PackageManager {
 		if (!existsSync(installRoot)) {
 			return;
 		}
-		const packageManagerName = this.getPackageManagerName();
-		if (packageManagerName === "bun") {
-			await this.runNpmCommand(["uninstall", source.name, "--cwd", installRoot]);
-			return;
-		}
-		const args = ["uninstall", source.name, "--prefix", installRoot];
-		if (packageManagerName !== "pnpm") {
-			args.push("--legacy-peer-deps");
-		}
-		await this.runNpmCommand(args);
+		await this.withNpmInstallLock(installRoot, async () => {
+			const packageManagerName = this.getPackageManagerName();
+			if (packageManagerName === "bun") {
+				await this.runNpmCommand(["uninstall", source.name, "--cwd", installRoot]);
+				return;
+			}
+			const args = ["uninstall", source.name, "--prefix", installRoot];
+			if (packageManagerName !== "pnpm") {
+				args.push("--legacy-peer-deps");
+			}
+			await this.runNpmCommand(args);
+		});
 	}
 
 	private async installGit(source: GitSource, scope: SourceScope): Promise<void> {
