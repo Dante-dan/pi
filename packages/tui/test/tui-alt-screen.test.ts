@@ -2001,6 +2001,49 @@ describe("TuiAltScreen", () => {
 		}
 	});
 
+	// #10640: legacy overlays consume raw mouse sequences through handleInput.
+	it("gives unhandled mouse gestures to a focused legacy overlay", async () => {
+		const terminal = new RecordingTerminal(20, 6);
+		const tui = new TuiAltScreen(terminal);
+		tui.addChild(new Text("selectable transcript", 0, 0));
+		tui.start();
+		await terminal.waitForRender();
+		const overlay = new InputOverlay();
+		const handle = tui.showOverlay(overlay);
+		await terminal.waitForRender();
+		const inputs = ["\x1b[<1;10;3M", "\x1b[<1;10;3m", "\x1b[<0;2;1M", "\x1b[<32;5;1M", "\x1b[<0;5;1m"];
+		for (const input of inputs) terminal.sendInput(input);
+		await terminal.waitForRender();
+		assert.deepStrictEqual(overlay.inputs, inputs);
+		assert.strictEqual(tui.hasActiveSelection(), false);
+		handle.unfocus();
+		terminal.sendInput("\x1b[<1;10;3M");
+		assert.deepStrictEqual(overlay.inputs, inputs);
+		tui.stop();
+	});
+
+	// #10640: opting into handleMouse must not also deliver raw input.
+	it("keeps raw mouse input out of a mouse-aware focused overlay", async () => {
+		const terminal = new VirtualTerminal(20, 6);
+		const tui = new TuiAltScreen(terminal);
+		const overlay = new InputOverlay();
+		const events: string[] = [];
+		const mouseOverlay = Object.assign(overlay, {
+			handleMouse: (event: TuiMouseEvent) => {
+				events.push(event.type);
+				return undefined;
+			},
+		});
+		tui.start();
+		tui.showOverlay(mouseOverlay, { anchor: "top-left", width: 20 });
+		await terminal.waitForRender();
+		terminal.sendInput("\x1b[<1;1;1M");
+		terminal.sendInput("\x1b[<1;1;1m");
+		assert.deepStrictEqual(events, ["press", "release"]);
+		assert.deepStrictEqual(overlay.inputs, []);
+		tui.stop();
+	});
+
 	it("gives wheel and viewport keys to a focused overlay", async () => {
 		const terminal = new VirtualTerminal(20, 6);
 		const tui = new TuiAltScreen(terminal);

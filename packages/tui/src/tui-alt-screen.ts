@@ -721,7 +721,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		const mouseEvent = this.parseSgrMouseEvent(data);
 		if (mouseEvent) {
-			this.handleMouseEvent(mouseEvent);
+			if (!this.handleMouseEvent(mouseEvent)) return undefined;
 			return { consume: true };
 		}
 		if (this.isMouseSequence(data)) return { consume: true };
@@ -899,7 +899,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionDragged = false;
 	}
 
-	private handleMouseEvent(raw: SgrMouseEvent): void {
+	private handleMouseEvent(raw: SgrMouseEvent): boolean {
 		const isMotion = (raw.button & 32) !== 0;
 		const type: TuiMouseEvent["type"] = raw.release
 			? "release"
@@ -930,17 +930,17 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.clearComponentMouseGesture();
 			}
 			if (render) this.requestRender();
-			return;
+			return true;
 		}
 
-		if (this.handleSearchMouseEvent(raw)) return;
+		if (this.handleSearchMouseEvent(raw)) return true;
 
 		const overlay = this.dispatchMouseToOverlay(event);
 		if (!overlay.hit) {
-			if (this.handleScrollToEndIndicatorMouseEvent(raw)) return;
+			if (this.handleScrollToEndIndicatorMouseEvent(raw)) return true;
 			const scrollbarHandled = this.handleScrollbarMouseEvent(raw);
 			if (!this.scrollbarDrag) this.updateScrollbarHover(raw.x, raw.y);
-			if (scrollbarHandled) return;
+			if (scrollbarHandled) return true;
 		} else {
 			this.stopScrollbarHover();
 		}
@@ -955,11 +955,20 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.mousePressMoved = false;
 			}
 			if (render) this.requestRender();
-			return;
+			return true;
 		}
 
-		if (this.handleRightClickPaste(raw)) return;
+		if (
+			(raw.button & 64) === 0 &&
+			this.shouldDeferViewportInputToOverlay() &&
+			!this.getFocusedComponent()?.handleMouse
+		) {
+			return false;
+		}
+
+		if (this.handleRightClickPaste(raw)) return true;
 		this.handleSelectionMouseEvent(raw);
+		return true;
 	}
 
 	private parseWheelEvent(data: string): WheelEvent | undefined {
