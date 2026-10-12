@@ -102,6 +102,31 @@ describe("generateSummary reasoning options", () => {
 		);
 	});
 
+	it("rejects oversized serialized history without calling the provider", async () => {
+		// Regression for #9602: oversized serialized input also occurs without thinking.
+		const model = { ...createModel(false), contextWindow: 1_000_000 };
+		const oversized: AgentMessage[] = [{ role: "user", content: "x".repeat(4_461_318), timestamp: 0 }];
+
+		await expect(generateSummary(oversized, model, 2000, "test-key")).rejects.toThrow(
+			"Summarization input is too large",
+		);
+		expect(completeSimpleMock).not.toHaveBeenCalled();
+	});
+
+	it("accounts for the system prompt and output reserve before a summary request", async () => {
+		// Regression for #9602: budget the actual normalized request, not only its history.
+		const model = { ...createModel(false), contextWindow: 1024 };
+		const context = normalizeContext({
+			systemPrompt: "s".repeat(2048),
+			messages: [{ role: "user", content: "Summarize this.", timestamp: 0 }],
+		});
+
+		await expect(completeSummarization(model, context, { maxTokens: 600 })).rejects.toThrow(
+			"600 output tokens exceed the 1024-token context window",
+		);
+		expect(completeSimpleMock).not.toHaveBeenCalled();
+	});
+
 	it("uses fresh routing sessions without prompt caching", async () => {
 		await generateSummary(messages, createModel(false), 2000, "test-key");
 		await generateSummary(messages, createModel(false), 2000, "test-key");

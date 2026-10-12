@@ -624,6 +624,16 @@ export async function completeSummarization(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 ): Promise<AssistantMessage> {
+	// Serialization can exceed the live conversation even without thinking: user
+	// text, tool-call arguments, and a previous summary are not individually capped.
+	// Reject an already oversized request before the provider call or retry loop.
+	const inputTokens = context.messages.reduce((total, message) => total + estimateTokens(message), 0);
+	const outputTokens = options.maxTokens ?? 0;
+	if (model.contextWindow > 0 && inputTokens + outputTokens > model.contextWindow) {
+		throw new Error(
+			`Summarization input is too large: estimated ${inputTokens} input tokens plus ${outputTokens} output tokens exceed the ${model.contextWindow}-token context window. Choose a larger-context model or reduce the messages to summarize.`,
+		);
+	}
 	// Avoid cache writes for one-off summaries. Reuse caller-supplied routing when available;
 	// callers without a session ID, including branch summaries, receive a fresh routing ID.
 	const requestOptions: SimpleStreamOptions = {
