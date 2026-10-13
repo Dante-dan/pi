@@ -1,0 +1,35 @@
+name: 10797 macOS process preflight (fork only)
+
+on:
+  push:
+    branches: [qa/10797-macos-process-preflight]
+
+permissions:
+  contents: read
+
+jobs:
+  process-preflight:
+    if: github.repository == 'Dante-dan/pi'
+    runs-on: xcode-27
+    timeout-minutes: 5
+    steps:
+      - name: Verify admitted runner and real process identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          sw_vers
+          uname -a
+          printf 'ImageOS=%s ImageVersion=%s\n' "$ImageOS" "$ImageVersion"
+          test "$(uname -m)" = arm64
+          test "$(sw_vers -productVersion)" = 27.0.1
+          sleep 3 &
+          child_pid=$!
+          identity="$(/bin/ps -p "$child_pid" -o pid=,ppid=,pgid=,lstart=,command=)"
+          printf '%s\n' "$identity"
+          test "$(printf '%s\n' "$identity" | awk '{print $1}')" = "$child_pid"
+          test "$(printf '%s\n' "$identity" | awk '{print $2}')" = "$$"
+          wait "$child_pid"
+          if /bin/ps -p "$child_pid" -o pid=; then
+            echo 'Known completed child unexpectedly remains in process table'
+            exit 1
+          fi
