@@ -181,9 +181,37 @@ export function killTrackedDetachedChildren(): void {
 	trackedDetachedChildPids.clear();
 }
 
-/**
- * Kill a process and all its children (cross-platform)
- */
+interface UnixProcessIdentity {
+	pid: number;
+	parentPid: number;
+	startedAtAndCommand: string;
+}
+
+function readUnixProcessIdentities(pid?: number): UnixProcessIdentity[] {
+	const result = spawnSync(
+		"/bin/ps",
+		[...(pid === undefined ? ["-ax"] : ["-p", String(pid)]), "-o", "pid=,ppid=,lstart=,command="],
+		{
+			encoding: "utf8",
+			timeout: 1000,
+			maxBuffer: 4 * 1024 * 1024,
+		},
+	);
+	if (result.error || result.status !== 0) return [];
+	const identities: UnixProcessIdentity[] = [];
+	for (const line of result.stdout.split("\n")) {
+		const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
+		if (!match) continue;
+		identities.push({
+			pid: Number(match[1]),
+			parentPid: Number(match[2]),
+			startedAtAndCommand: match[3].trim().replace(/\s+/g, " "),
+		});
+	}
+	return identities;
+}
+
+/** Kill a process and its currently observable descendants (cross-platform). */
 export function killProcessTree(pid: number): void {
 	if (process.platform === "win32") {
 		// Use the trusted System32 executable so cleanup does not depend on PATH.
@@ -203,6 +231,43 @@ export function killProcessTree(pid: number): void {
 			// Ignore errors if taskkill fails.
 		}
 	} else {
+		if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) return;
+		// Capture ancestry before killing the shell: detached descendants can have
+		// their own group and become adopted by init when their parent is killed.
+		const identities = readUnixProcessIdentities();
+		const rootIdentity = identities.find((identity) => identity.pid === pid);
+		const descendants = identities.filter((identity) => identity.parentPid === pid);
+		const capturedPids = new Set([pid, ...descendants.map((identity) => identity.pid)]);
+		if (rootIdentity) {
+			for (let index = 0; index < descendants.length; index++) {
+				for (const identity of identities) {
+					if (identity.parentPid === descendants[index].pid && !capturedPids.has(identity.pid)) {
+						capturedPids.add(identity.pid);
+						descendants.push(identity);
+					}
+				}
+			}
+			// Signal leaves first, without signaling an unrelated process group. Check
+			// current parent/start time/command immediately before each PID signal.
+			const deadline = Date.now() + 2000;
+			for (const descendant of descendants.reverse()) {
+				if (Date.now() >= deadline) break;
+				if (descendant.pid <= 1 || descendant.pid === process.pid) continue;
+				const current = readUnixProcessIdentities(descendant.pid)[0];
+				if (
+					current?.parentPid !== descendant.parentPid ||
+					current.startedAtAndCommand !== descendant.startedAtAndCommand
+				)
+					continue;
+				try {
+					process.kill(descendant.pid, "SIGKILL");
+				} catch {
+					// The captured descendant may already have exited.
+				}
+			}
+			const currentRoot = readUnixProcessIdentities(pid)[0];
+			if (currentRoot?.startedAtAndCommand !== rootIdentity.startedAtAndCommand) return;
+		}
 		// Use SIGKILL on Unix/Linux/Mac
 		try {
 			process.kill(-pid, "SIGKILL");

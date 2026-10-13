@@ -38,6 +38,11 @@ jobs:
         with:
           node-version: 26
       - run: npm ci --ignore-scripts
-      - name: Actual bash tool lifecycle regression baseline
+      - name: Actual bash tool lifecycle regression and existing output regressions
         working-directory: packages/coding-agent
-        run: node ../../node_modules/vitest/dist/cli.js --run test/bash-detached-descendants-unix.test.ts --reporter=verbose
+        run: >-
+          node ../../node_modules/vitest/dist/cli.js --run
+          test/bash-detached-descendants-unix.test.ts
+          test/suite/regressions/5208-late-bash-output.test.ts
+          test/suite/regressions/5303-bash-output-truncation.test.ts
+          --reporter=verbose
