@@ -1,4 +1,5 @@
-import { homedir } from "os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
 import { join, resolve } from "path";
 import { describe, expect, it } from "vitest";
 import type { ResourceDiagnostic } from "../src/core/diagnostics.ts";
@@ -63,6 +64,44 @@ describe("skills", () => {
 			expect(skills).toHaveLength(1);
 			expect(diagnostics.some((d: ResourceDiagnostic) => d.message.includes("invalid characters"))).toBe(true);
 		});
+
+		// Regression: #10919 — identify the name source and report the actual file load outcome.
+		it.each([
+			["Purple Team & Adversary Emulation", "22-purple-team", true, "frontmatter name"],
+			[undefined, "Invalid_Directory", true, "directory-derived name"],
+			["Purple Team & Adversary Emulation", "22-purple-team", false, "frontmatter name"],
+		])(
+			"should explain invalid name warnings (%s, %s, description: %s)",
+			(name, directory, hasDescription, nameSource) => {
+				const root = mkdtempSync(join(tmpdir(), "pi-skill-name-"));
+				try {
+					const dir = join(root, directory);
+					mkdirSync(dir);
+					const fields = [
+						"---",
+						...(name ? [`name: ${name}`] : []),
+						...(hasDescription ? ["description: Purple-team planning."] : []),
+						"---",
+						"# Human-readable title",
+					];
+					writeFileSync(join(dir, "SKILL.md"), fields.join("\n"));
+					const { skills, diagnostics } = loadSkillsFromDir({ dir, source: "test" });
+					expect(skills).toHaveLength(hasDescription ? 1 : 0);
+					if (hasDescription) expect(skills[0].name).toBe(name ?? directory);
+					const warning = diagnostics.find((d) => d.message.includes("invalid characters"));
+					expect(warning?.message).toContain(`${nameSource} contains invalid characters`);
+					expect(warning?.message).toContain('Use a valid slug such as "my-skill".');
+					expect(warning?.message).toContain(
+						hasDescription
+							? "Skill file is still loaded."
+							: "Skill is skipped because description is missing or empty.",
+					);
+					expect(warning?.path).toBe(join(dir, "SKILL.md"));
+				} finally {
+					rmSync(root, { recursive: true, force: true });
+				}
+			},
+		);
 
 		it("should warn when name exceeds 64 characters", () => {
 			const { skills, diagnostics } = loadSkillsFromDir({

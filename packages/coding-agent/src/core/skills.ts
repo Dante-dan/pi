@@ -323,7 +323,15 @@ function loadSkillFromFile(
 	// Validate name
 	const nameErrors = validateName(name);
 	for (const error of nameErrors) {
-		diagnostics.push({ type: "warning", message: error, path: filePath });
+		const nameSource = frontmatterName ? "frontmatter name" : "directory-derived name";
+		const loadOutcome = hasDescription
+			? "Skill file is still loaded."
+			: "Skill is skipped because description is missing or empty.";
+		diagnostics.push({
+			type: "warning",
+			message: `${error.replace(/^name/, nameSource)}. Use a valid slug such as "my-skill". ${loadOutcome}`,
+			path: filePath,
+		});
 	}
 
 	// Still load the skill even with warnings, unless description is missing or empty.
