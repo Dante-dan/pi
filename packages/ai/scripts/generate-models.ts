@@ -2331,8 +2331,13 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		] as const;
 
 		for (const { key, provider, baseUrl } of minimaxVariants) {
-			if (data[key]?.models) {
-				for (const [modelId, model] of Object.entries(data[key].models)) {
+			// M3.1 is subscription-only and is listed under the coding-plan
+			// catalog, but uses the same Anthropic-compatible endpoint.
+			const m31Id = "MiniMax-M3.1-Flash-Preview";
+			const m31 = data[`${key}-coding-plan`]?.models?.[m31Id];
+			const sourceModels = { ...data[key]?.models, ...(m31 ? { [m31Id]: m31 } : {}) };
+			if (Object.keys(sourceModels).length > 0) {
+				for (const [modelId, model] of Object.entries(sourceModels)) {
 					const m = model as ModelsDevModel;
 					if (m.tool_call !== true) continue;
 
@@ -2344,6 +2349,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 						// MiniMax's Anthropic-compatible API - SDK appends /v1/messages
 						baseUrl,
 						reasoning: m.reasoning === true,
+						...(modelId === m31Id ? { compat: { forceAdaptiveThinking: true } } : {}),
 						input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
 						cost: getModelsDevCost(m.cost),
 						contextWindow: m.limit?.context || 4096,
@@ -3114,7 +3120,12 @@ async function generateModels() {
 		}
 	}
 
-	const minimaxDirectSupportedIds = new Set(["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M3"]);
+	const minimaxDirectSupportedIds = new Set([
+		"MiniMax-M2.7",
+		"MiniMax-M2.7-highspeed",
+		"MiniMax-M3",
+		"MiniMax-M3.1-Flash-Preview",
+	]);
 
 	for (let i = allModels.length - 1; i >= 0; i--) {
 		const candidate = allModels[i];
