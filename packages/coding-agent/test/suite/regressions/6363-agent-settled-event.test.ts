@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
@@ -24,6 +25,51 @@ describe("regression #6363: agent settled event and idle waiting", () => {
 		while (harnesses.length > 0) {
 			harnesses.pop()?.cleanup();
 		}
+	});
+
+	// #10928: cooperative final-boundary handlers need a signal after the low-level run ends.
+	it("aborts a cancellable before-settle handler and gives the next boundary a fresh signal", async () => {
+		let markBoundaryStarted = () => {};
+		const boundaryStarted = new Promise<void>((resolve) => {
+			markBoundaryStarted = resolve;
+		});
+		const signals: Array<AbortSignal | undefined> = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_before_settle", async (_event, ctx) => {
+						const signal = ctx.signal;
+						signals.push(signal);
+						if (signals.length !== 1) return;
+						markBoundaryStarted();
+						await delay(10_000, undefined, { signal }).catch((error) => {
+							if (!signal?.aborted) throw error;
+						});
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+
+		const prompted = harness.session.prompt("first");
+		await boundaryStarted;
+		expect(signals[0]).toBeInstanceOf(AbortSignal);
+		expect(signals[0]?.aborted).toBe(false);
+		await harness.session.abort();
+		await prompted;
+		expect(signals[0]?.aborted).toBe(true);
+		expect(harness.eventsOfType("agent_settled")).toEqual([{ type: "agent_settled", aborted: true }]);
+		expect(harness.session.extensionRunner.createContext().signal).toBeUndefined();
+
+		await harness.session.prompt("second");
+		expect(signals[1]).toBeInstanceOf(AbortSignal);
+		expect(signals[1]).not.toBe(signals[0]);
+		expect(signals[1]?.aborted).toBe(false);
+		expect(harness.eventsOfType("agent_settled")).toEqual([
+			{ type: "agent_settled", aborted: true },
+			{ type: "agent_settled", aborted: false },
+		]);
 	});
 
 	it("emits one agent_settled event after automatic retry finishes", async () => {
