@@ -108,8 +108,9 @@ describe("Anthropic mid-conversation effort", () => {
 			content: [],
 			output_config: { effort: "high" },
 		});
-		expect(first.payload.output_config).toEqual({ effort: "high" });
-		expect(second.payload.output_config).toEqual({ effort: "high" });
+		// #10063: the stable baseline must also work for organizations capped below high.
+		expect(first.payload.output_config).toEqual({ effort: "low" });
+		expect(second.payload.output_config).toEqual({ effort: "low" });
 		expect(second.payload.thinking).toEqual({
 			type: "adaptive",
 			display: "summarized",
@@ -121,6 +122,7 @@ describe("Anthropic mid-conversation effort", () => {
 	it.each(["low", "medium", "high", "xhigh", "max"] as const)("preserves native effort %s", async (effort) => {
 		const model = managedModel();
 		const { payload, message } = await capture(model, { messages: [user("one", 1)] }, { effort });
+		expect(payload.output_config).toEqual({ effort: "low" });
 		expect(effortMessages(payload)).toEqual([{ role: "system", content: [], output_config: { effort } }]);
 		expect(message.providerThinkingLevel).toBe(effort);
 	});

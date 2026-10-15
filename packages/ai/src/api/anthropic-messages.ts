@@ -1283,7 +1283,9 @@ function buildParams(
 			display: options?.thinkingDisplay ?? "summarized",
 			block_binding: { prefix_mismatch_behavior: "drop_block" },
 		};
-		params.output_config = { effort: "high" };
+		// Keep the cached baseline stable without exceeding organization effort caps (#10063).
+		// Historical and active effort levels are supplied by the system messages above.
+		params.output_config = { effort: "low" };
 	} else if (model.reasoning && options?.thinkingEnabled) {
 		// Default to "summarized" so Opus 4.7 and Mythos Preview behave like
 		// older Claude 4 models (whose API default is also "summarized").
