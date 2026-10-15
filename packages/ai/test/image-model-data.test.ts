@@ -96,4 +96,20 @@ describe("OpenRouter catalog parsing", () => {
 			},
 		]);
 	});
+
+	// https://github.com/earendil-works/pi/issues/10861
+	it("limits classifier input to the System One transport while preserving other image operations", () => {
+		const multimodalDecision = {
+			...chatWithImages,
+			architecture: {
+				...chatWithImages.architecture,
+				output_modalities: ["text", "image", "decisions"],
+			},
+		};
+		const catalog = buildOpenRouterCatalog([multimodalDecision], [multimodalDecision], [multimodalDecision]);
+
+		expect(catalog.classifiers[0]?.input).toEqual(["text"]);
+		expect(catalog.chat[0]?.input).toEqual(["text", "image"]);
+		expect(catalog.images[0]?.input).toEqual(["text", "image"]);
+	});
 });

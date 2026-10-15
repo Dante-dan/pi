@@ -82,12 +82,12 @@ export function buildOpenRouterCatalog(
 	}
 
 	// Decision models such as TypeSafe's Jev are served through OpenRouter's
-	// TypeSafe-compatible System One endpoint.
+	// TypeSafe-compatible System One endpoint. Pi's System One transport only
+	// accepts text/JSON state, even when the upstream model supports images.
 	const classifiers: OpenRouterCatalog["classifiers"] = [];
 	for (const model of decisionListed) {
 		if (classifiers.some((entry) => entry.id === model.id)) continue;
 		if (!model.architecture?.output_modalities?.includes("decisions")) continue;
-		const input = modalities(model.architecture.input_modalities);
 		classifiers.push({
 			type: "classifier",
 			id: model.id,
@@ -95,7 +95,7 @@ export function buildOpenRouterCatalog(
 			api: "typesafe-system-one",
 			provider: "openrouter",
 			baseUrl: "https://openrouter.ai/api/v1",
-			input: input.length > 0 ? input : ["text"],
+			input: ["text"],
 			cost: openRouterCost(model.pricing),
 			contextWindow: model.top_provider?.context_length || model.context_length || 4096,
 		});
