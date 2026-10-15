@@ -1148,6 +1148,13 @@ function getBetaFeatures(
 	if (shouldUseServerSideFallbackBeta(model)) features.push(SERVER_SIDE_FALLBACK_BETA);
 	if (model.compat?.supportsMidConvoEffort === true) {
 		features.push(MID_CONVERSATION_OUTPUT_CONFIG_BETA, THINKING_BINDING_CONTROLS_BETA);
+	} else if (
+		model.compat?.supportsThinkingBlockBinding === true &&
+		model.compat?.forceAdaptiveThinking === true &&
+		model.reasoning &&
+		options?.thinkingEnabled === true
+	) {
+		features.push(THINKING_BINDING_CONTROLS_BETA);
 	}
 	if (nativeToolChanges) features.push(INLINE_TOOLS_BETA);
 	return [...new Set(features)];
@@ -1290,7 +1297,13 @@ function buildParams(
 		const display: AnthropicThinkingDisplay = options.thinkingDisplay ?? "summarized";
 		if (model.compat?.forceAdaptiveThinking === true) {
 			// Adaptive thinking: Claude decides when and how much to think.
-			params.thinking = { type: "adaptive", display };
+			params.thinking = {
+				type: "adaptive",
+				display,
+				...(model.compat?.supportsThinkingBlockBinding === true
+					? { block_binding: { prefix_mismatch_behavior: "drop_block" as const } }
+					: {}),
+			};
 			if (options.effort) {
 				params.output_config = { effort: options.effort };
 			}

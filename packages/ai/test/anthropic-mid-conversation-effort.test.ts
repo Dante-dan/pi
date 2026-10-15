@@ -1,3 +1,4 @@
+import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { type AnthropicOptions, stream } from "../src/api/anthropic-messages.ts";
 import { getModel, normalizeContext } from "../src/compat.ts";
@@ -11,6 +12,8 @@ interface WireMessage {
 
 interface CapturedPayload {
 	messages: WireMessage[];
+	betas?: string[];
+	tools?: Array<{ name: string }>;
 	thinking?: {
 		type: string;
 		display?: string;
@@ -241,6 +244,54 @@ describe("Anthropic mid-conversation effort", () => {
 		// OpenRouter rejects configuration_update on Opus 5 but accepts it on Fable 5.1.
 		expect(getModel("openrouter", "anthropic/claude-opus-5").compat?.supportsMidConvoEffort).toBeUndefined();
 		expect(getModel("anthropic", "claude-opus-5").compat?.allowedFallbackModels).toBeUndefined();
+	});
+
+	// #10954: binding controls do not imply support for effort-only system messages.
+	it("keeps OpenCode Go Haiku effort top-level when replaying thinking with added tools", async () => {
+		const model = getModel("opencode-go", "claude-haiku-5-5");
+		const messages = [user("one", 1), assistant(model), user("two", 2)];
+		const tools = ["read", "write", "search"].map((name) => ({
+			name,
+			description: name,
+			parameters: Type.Object({}),
+		}));
+		const first = await capture(model, { messages, tools: tools.slice(0, 2) }, { effort: "low" });
+		const second = await capture(model, { messages, tools }, { effort: "high" });
+
+		expect(model.compat?.supportsThinkingBlockBinding).toBe(true);
+		expect(model.compat?.supportsMidConvoEffort).toBeUndefined();
+		expect(first.payload.tools).toHaveLength(2);
+		expect(second.payload.tools).toHaveLength(3);
+		expect(second.payload.messages).toEqual(first.payload.messages);
+		expect(second.payload.messages[1].content).toContainEqual({
+			type: "thinking",
+			thinking: "reasoning",
+			signature: "signature",
+		});
+		expect(effortMessages(second.payload)).toEqual([]);
+		expect(second.payload.thinking?.block_binding).toEqual({ prefix_mismatch_behavior: "drop_block" });
+		expect(second.payload.betas).toContain("thinking-binding-controls-2026-08-01");
+		expect(second.payload.betas).not.toContain("mid-conversation-output-config-2026-07-01");
+		expect(first.payload.output_config).toEqual({ effort: "low" });
+		expect(second.payload.output_config).toEqual({ effort: "high" });
+		expect(second.message.providerThinkingLevel).toBeUndefined();
+	});
+
+	it("omits standalone binding controls when thinking is disabled", async () => {
+		const model = getModel("opencode-go", "claude-haiku-5-5");
+		const { payload } = await capture(model, { messages: [user("one", 1)] }, { thinkingEnabled: false });
+		expect(payload.thinking).toEqual({ type: "disabled" });
+		expect(payload.betas ?? []).not.toContain("thinking-binding-controls-2026-08-01");
+	});
+
+	it("does not enable standalone binding controls for other transports or adaptive models", () => {
+		for (const model of [
+			getModel("opencode", "claude-haiku-5-5"),
+			getModel("opencode", "claude-sonnet-4-6"),
+			getModel("anthropic", "claude-opus-4-6"),
+		]) {
+			expect(model.compat?.supportsThinkingBlockBinding).toBeUndefined();
+		}
 	});
 
 	it("supports off only on managed models that accept disabled thinking", () => {

@@ -1260,6 +1260,10 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 
 function getAnthropicMessagesCompat(provider: string, modelId: string): AnthropicMessagesCompat | undefined {
 	const compat: AnthropicMessagesCompat = {};
+	// #10954 verifies binding controls on this transport/model, not effort-only system messages.
+	if (provider === "opencode-go" && modelId === "claude-haiku-5-5") {
+		compat.supportsThinkingBlockBinding = true;
+	}
 	if (
 		VERIFIED_ANTHROPIC_MID_CONVO_EFFORT_PROVIDERS.has(provider) &&
 		supportsAnthropicMidConvoEffort(modelId) &&

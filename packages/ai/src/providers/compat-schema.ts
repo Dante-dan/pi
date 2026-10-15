@@ -477,6 +477,11 @@ export const AnthropicMessagesCompatSchema = Type.Object(
 				default: false,
 			}),
 		),
+		supportsThinkingBlockBinding: optionalCompatBoolean({
+			description:
+				"Whether adaptive thinking accepts block_binding.prefix_mismatch_behavior and the thinking-binding-controls beta independently of mid-conversation effort messages.",
+			default: false,
+		}),
 		supportsMidConvoSystemMessages: optionalCompatBoolean({
 			description:
 				"Whether the exact model accepts system-role messages inside the conversation. When false, later system messages are folded into the top-level system prompt.",
