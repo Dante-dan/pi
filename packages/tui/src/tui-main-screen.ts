@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
 import { type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
-import { visibleWidth } from "./utils.ts";
+import { normalizeTerminalOutput, visibleWidth } from "./utils.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 const MAX_RENDER_WRITE_CHARS = 1024 * 1024;
@@ -201,7 +201,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		let reservedRows = 1;
 		while (reservedRows < maxRows) {
 			const line = lines[index + reservedRows] ?? "";
-			if (isImageLine(line) || visibleWidth(line) > 0) break;
+			if (isImageLine(line) || visibleWidth(normalizeTerminalOutput(line)) > 0) break;
 			reservedRows++;
 		}
 		return reservedRows;
@@ -272,10 +272,12 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// Extract cursor position before applying line resets (marker must be found first)
 		const cursorPos = this.extractCursorPosition(newLines, height);
 
-		newLines = this.applyLineResets(newLines);
+		// Keep raw lines for differential comparison; normalize only the lines we write.
+		// In particular, an unchanged transcript does not need line resets on every spinner frame.
 
 		// Helper to clear scrollback and viewport and render all new lines
 		const fullRender = (clear: boolean): void => {
+			const renderedLines = this.applyLineResets([...newLines]);
 			this.fullRedrawCount += 1;
 			const output = new BoundedTerminalWriter((data) => this.terminal.write(data));
 			output.append("\x1b[?2026h"); // Begin synchronized output
@@ -285,7 +287,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			}
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) output.append("\r\n");
-				const line = newLines[i];
+				const line = renderedLines[i];
 				const isImage = isImageLine(line);
 				const imageReservedRows = isImage ? this.getKittyImageReservedRows(newLines, i) : 1;
 				if (imageReservedRows > 1 && imageReservedRows <= height) {
@@ -368,7 +370,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			const oldLine = i < this.previousLines.length ? this.previousLines[i] : "";
 			const newLine = i < newLines.length ? newLines[i] : "";
 
-			if (oldLine !== newLine) {
+			if (i >= this.previousLines.length || i >= newLines.length || oldLine !== newLine) {
 				if (firstChanged === -1) {
 					firstChanged = i;
 				}
@@ -488,9 +490,10 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// Only render changed lines (firstChanged to lastChanged), not all lines to end
 		// This reduces flicker when only a single line changes (e.g., spinner animation)
 		const renderEnd = Math.min(lastChanged, newLines.length - 1);
+		const renderedLines = this.applyLineResets(newLines.slice(firstChanged, renderEnd + 1));
 		for (let i = firstChanged; i <= renderEnd; i++) {
 			if (i > firstChanged) output.append("\r\n");
-			const line = newLines[i];
+			const line = renderedLines[i - firstChanged];
 			const isImage = isImageLine(line);
 			const imageReservedRows = isImage ? this.getKittyImageReservedRows(newLines, i, renderEnd) : 1;
 			if (imageReservedRows > 1) {
