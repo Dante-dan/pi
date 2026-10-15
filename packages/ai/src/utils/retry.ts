@@ -253,5 +253,7 @@ export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	const errorMessage = message.errorMessage;
 	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
+	// Mistral reports transient generation failures as a native error finish reason.
+	if (message.api === "mistral-conversations" && message.rawStopReason === "error") return true;
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
 }

@@ -16,6 +16,19 @@ const azurePeakLoadError =
 	"The system is currently experiencing high demand and cannot process your request. Your request exceeds the maximum usage size allowed during peak load. For improved capacity reliability, consider switching to Provisioned Throughput.";
 
 describe("provider retry classification", () => {
+	it("limits native Mistral error retries to that API and preserves quota exclusions", () => {
+		// Regression for #10487.
+		const error = {
+			...fauxAssistantMessage("", { stopReason: "error", errorMessage: "Provider stopped with: error" }),
+			api: "mistral-conversations" as const,
+			rawStopReason: "error",
+		};
+		expect(isRetryableAssistantError(error)).toBe(true);
+		expect(isRetryableAssistantError({ ...error, api: "openai-completions" })).toBe(false);
+		expect(isRetryableAssistantError({ ...error, errorMessage: "quota exceeded" })).toBe(false);
+		expect(isRetryableAssistantError({ ...error, stopReason: "aborted" })).toBe(false);
+	});
+
 	it("matches explicit provider retry guidance", () => {
 		expect(
 			isRetryableAssistantError(
