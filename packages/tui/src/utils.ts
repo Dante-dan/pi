@@ -753,6 +753,7 @@ class AnsiCodeTracker {
 	/**
 	 * Get reset codes for attributes that need to be turned off at line end.
 	 * Underline must be closed to prevent bleeding into padding.
+	 * Strikethrough must also be closed before padding.
 	 * Active OSC 8 hyperlinks must be closed and re-opened on the next line.
 	 * Returns empty string if no attributes need closing.
 	 */
@@ -760,6 +761,9 @@ class AnsiCodeTracker {
 		let result = "";
 		if (this.underline) {
 			result += "\x1b[24m"; // Underline off only
+		}
+		if (this.strikethrough) {
+			result += "\x1b[29m";
 		}
 		if (this.activeHyperlink) {
 			result += formatOsc8Close(this.activeHyperlink.terminator); // Re-opened at line start via getActiveCodes()
@@ -843,6 +847,11 @@ function splitIntoTokensWithAnsi(text: string): string[] {
 
 			const segmentKind = segmentIsSpace ? "space" : "word";
 			if (current && currentKind !== segmentKind) {
+				if (segmentIsSpace) {
+					// Keep the word's closing styles before whitespace that may be dropped at a wrap.
+					current += pendingAnsi;
+					pendingAnsi = "";
+				}
 				flushCurrent();
 			}
 

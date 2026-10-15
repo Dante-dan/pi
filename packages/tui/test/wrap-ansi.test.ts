@@ -3,6 +3,29 @@ import { describe, it } from "node:test";
 import { visibleWidth, wrapTextWithAnsi } from "../src/utils.ts";
 
 describe("wrapTextWithAnsi", () => {
+	it("keeps closing styles on a word that ends at the wrap boundary", () => {
+		// Regression for #10925: the reset must not turn the following space into a word token.
+		for (const [open, close] of [
+			["7", "27"],
+			["3", "23"],
+			["1", "22"],
+			["9", "29"],
+		]) {
+			assert.deepStrictEqual(wrapTextWithAnsi(`\x1b[${open}mhello\x1b[${close}m world`, 5), [
+				`\x1b[${open}mhello\x1b[${close}m`,
+				"world",
+			]);
+		}
+	});
+
+	it("closes strikethrough before padding and restores it on continuation lines", () => {
+		// Regression for #10925: padding must not inherit a strike that continues on the next line.
+		assert.deepStrictEqual(wrapTextWithAnsi("\x1b[44m\x1b[9mhello world\x1b[29m", 5), [
+			"\x1b[44m\x1b[9mhello\x1b[29m",
+			"\x1b[9;44mworld\x1b[29m",
+		]);
+	});
+
 	describe("underline styling", () => {
 		it("should not apply underline style before the styled text", () => {
 			const underlineOn = "\x1b[4m";
