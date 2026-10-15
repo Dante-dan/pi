@@ -1,6 +1,6 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
-import { createHarness, type Harness } from "../harness.ts";
+import { createHarness, getAssistantTexts, type Harness } from "../harness.ts";
 
 describe("settled continuation completion", () => {
 	const harnesses: Harness[] = [];
@@ -37,6 +37,60 @@ describe("settled continuation completion", () => {
 		expect(harness.session.messages.some((message) => message.role === "custom")).toBe(false);
 		await harness.session.prompt("new independent prompt");
 		expect(harness.faux.state.callCount).toBe(2);
+	});
+
+	// Regression #10705: A/B/C replay boundary suggested by @baishatan in issuecomment-6137199494.
+	it("cancels an active deferred continuation without replaying the next one", async () => {
+		let continued = false;
+		let startA!: () => void;
+		let finishA!: () => void;
+		const aStarted = new Promise<void>((resolve) => {
+			startA = resolve;
+		});
+		const aMayFinish = new Promise<void>((resolve) => {
+			finishA = resolve;
+		});
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_settled", (event) => {
+						if (continued || event.aborted) return;
+						continued = true;
+						for (const name of ["A", "B"]) {
+							pi.sendMessage({ customType: name, content: name, display: false }, { triggerTurn: true });
+						}
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("first"),
+			async () => {
+				startA();
+				await aMayFinish;
+				return fauxAssistantMessage("A should be cancelled");
+			},
+			fauxAssistantMessage("C completed"),
+		]);
+		const prompt = harness.session.prompt("hello");
+		await aStarted;
+		const abort = harness.session.abort();
+		finishA();
+		await abort;
+		await prompt;
+		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.session.messages.some((message) => message.role === "custom" && message.customType === "B")).toBe(
+			false,
+		);
+		expect(
+			harness
+				.eventsOfType("message_end")
+				.some((event) => event.message.role === "assistant" && event.message.stopReason === "aborted"),
+		).toBe(true);
+		await harness.session.prompt("independent prompt C");
+		expect(harness.faux.state.callCount).toBe(3);
+		expect(getAssistantTexts(harness).at(-1)).toBe("C completed");
 	});
 
 	// Regression #10704: manual compaction must not resolve a waiter before its settled handler resumes.
