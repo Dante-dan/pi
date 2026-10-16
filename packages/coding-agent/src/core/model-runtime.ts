@@ -82,11 +82,7 @@ import {
 	resolveConfiguredModelHeaders,
 	validateExtensionProvider,
 } from "./provider-composer.ts";
-import {
-	withPersonalizedCatalog,
-	withRemoteCatalog,
-	withCredentialScopedCatalog,
-} from "./remote-catalog-provider.ts";
+import { withCredentialScopedCatalog, withPersonalizedCatalog, withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
 import {
 	createVirtualModel,

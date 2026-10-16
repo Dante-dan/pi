@@ -121,32 +121,58 @@ export function withCredentialScopedCatalog(
 		getAllModels,
 		async refreshModels(context) {
 			// Hash the high-entropy access token, never persist it. Token rotation also invalidates the overlay.
-			const scope = context.credential?.type === "oauth"
-				? createHash("sha256").update(JSON.stringify([context.baseUrl ?? provider.baseUrl, context.credential.access])).digest("hex")
-				: undefined;
-			const saved = (context.stored as CredentialScopedCatalog | undefined)?.credentialCatalog;
-			if (!(await context.publish({ update: () => {
-				personalized = scope !== undefined && saved?.scope === scope
-					? saved.models.filter(isSupportedModelType)
+			const scope =
+				context.credential?.type === "oauth"
+					? createHash("sha256")
+							.update(JSON.stringify([context.baseUrl ?? provider.baseUrl, context.credential.access]))
+							.digest("hex")
 					: undefined;
-			} }))) return;
+			const saved = (context.stored as CredentialScopedCatalog | undefined)?.credentialCatalog;
+			if (
+				!(await context.publish({
+					update: () => {
+						personalized =
+							scope !== undefined && saved?.scope === scope
+								? saved.models.filter(isSupportedModelType)
+								: undefined;
+					},
+				}))
+			)
+				return;
 			let publicEntry: ModelsStoreEntry = context.stored ?? { models: [] };
 			try {
-				await remote.refreshModels!({ ...context, publish: async (publication) => {
-					if (publication.persist) publicEntry = publication.persist;
-					return context.publish(publication);
-				} });
+				await remote.refreshModels!({
+					...context,
+					publish: async (publication) => {
+						if (publication.persist) publicEntry = publication.persist;
+						return context.publish(publication);
+					},
+				});
 			} finally {
 				if (context.allowNetwork && !context.signal.aborted) {
 					// Keep only public data before fetching, so an account request failure cannot revive stale limits.
 					const { credentialCatalog: _saved, ...publicCatalog } = publicEntry as CredentialScopedCatalog;
-					await context.publish({ persist: publicCatalog, update: () => { personalized = undefined; } });
+					await context.publish({
+						persist: publicCatalog,
+						update: () => {
+							personalized = undefined;
+						},
+					});
 					context.signal.throwIfAborted();
 					const models = await personalize(remote.getAllModels!(), context);
-					const entry: CredentialScopedCatalog = scope === undefined ? publicCatalog : {
-						...publicCatalog, credentialCatalog: { scope, models },
-					};
-					await context.publish({ persist: entry, update: () => { personalized = models; } });
+					const entry: CredentialScopedCatalog =
+						scope === undefined
+							? publicCatalog
+							: {
+									...publicCatalog,
+									credentialCatalog: { scope, models },
+								};
+					await context.publish({
+						persist: entry,
+						update: () => {
+							personalized = models;
+						},
+					});
 				}
 			}
 		},

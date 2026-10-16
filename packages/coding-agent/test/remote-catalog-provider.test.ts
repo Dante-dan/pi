@@ -15,9 +15,9 @@ import { VERSION } from "../src/config.ts";
 import {
 	type PersonalizeCatalog,
 	REMOTE_CATALOG_MODEL_TYPES,
+	withCredentialScopedCatalog,
 	withPersonalizedCatalog,
 	withRemoteCatalog,
-	withCredentialScopedCatalog,
 } from "../src/core/remote-catalog-provider.ts";
 
 const neverAbortedSignal = new AbortController().signal;
@@ -109,7 +109,12 @@ describe("remote catalog provider", () => {
 		models.setProvider(withCredentialScopedCatalog(openaiProvider(), personalizeOpenAICatalog));
 		await models.refresh({ allowNetwork: false });
 		expect(models.getModel("openai", baseline.id)?.contextWindow).toBe(500000);
-		await credentials.modify("openai", async () => ({ type: "oauth", access: "account-b", refresh: "b", expires: Number.MAX_SAFE_INTEGER }));
+		await credentials.modify("openai", async () => ({
+			type: "oauth",
+			access: "account-b",
+			refresh: "b",
+			expires: Number.MAX_SAFE_INTEGER,
+		}));
 		await models.refresh({ allowNetwork: false });
 		expect(models.getModel("openai", baseline.id)?.contextWindow).toBe(272000);
 		await models.refresh();
