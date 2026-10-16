@@ -127,6 +127,22 @@ describe("Anthropic mid-conversation effort", () => {
 		expect(message.providerThinkingLevel).toBe(effort);
 	});
 
+	// #10063: low/medium markers must not inherit a top-level effort above a medium organization cap.
+	it.each(["low", "medium"] as const)("keeps %s marker requests within a medium top-level cap", async (effort) => {
+		const model = managedModel();
+		const { payload } = await capture(
+			model,
+			{ messages: [user("one", 1), assistant(model, "low"), user("two", 2)] },
+			{ effort },
+		);
+
+		expect(["low", "medium"]).toContain(payload.output_config?.effort);
+		expect(effortMessages(payload)).toEqual([
+			{ role: "system", content: [], output_config: { effort: "low" } },
+			{ role: "system", content: [], output_config: { effort } },
+		]);
+	});
+
 	it("defaults omitted effort to high and still enables drop_block", async () => {
 		const { payload, message } = await capture(managedModel(), { messages: [user("one", 1)] });
 		expect(payload.messages.at(-1)).toEqual({
