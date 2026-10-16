@@ -236,6 +236,9 @@ export interface OAuthAuth {
 	 */
 	refresh(credential: OAuthCredential, signal: AbortSignal): Promise<OAuthCredential>;
 
+	/** Refresh model permissions with a valid access token during online model refresh. */
+	refreshModelPermissions?(credential: OAuthCredential, signal: AbortSignal): Promise<OAuthCredential>;
+
 	/**
 	 * Side-effect-free derivation of request auth from a valid credential.
 	 * Covers per-credential baseUrl (GitHub Copilot). Async so lazy wrappers

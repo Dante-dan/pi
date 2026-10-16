@@ -229,6 +229,76 @@ describe("GitHub Copilot OAuth device flow", () => {
 		expect(credentials.availableModelIds).toEqual([]);
 	});
 
+	// Regression for #11006: valid OAuth tokens must not freeze account model permissions.
+	it("refreshes account models online while retaining cached permissions on failure", async () => {
+		const provider = githubCopilotProvider();
+		const modelId = requireModelId(provider.getModels(), 0);
+		let fail = false;
+		stubGitHubCopilotLoginFetch({
+			models: () =>
+				fail
+					? jsonResponse({ error: "unavailable" }, 503)
+					: jsonResponse({ data: [{ id: modelId, model_picker_enabled: true }] }),
+		});
+		const store = new InMemoryCredentialStore();
+		await store.modify("github-copilot", async () => ({
+			type: "oauth",
+			access: "old-access-token",
+			refresh: "ghu_refresh_token",
+			expires: Date.now() + 60 * 60 * 1000,
+			availableModelIds: [],
+		}));
+		const models = createModels({ credentials: store });
+		models.setProvider(provider);
+		expect(await models.getAvailable("github-copilot")).toEqual([]);
+		expect((await models.refresh({ allowNetwork: false })).errors.size).toBe(0);
+		expect(fetch).not.toHaveBeenCalled();
+		expect((await models.refresh()).errors.size).toBe(0);
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect((await models.getAvailable("github-copilot")).map((model) => model.id)).toEqual([modelId]);
+		const credential = await store.read("github-copilot");
+		expect(credential).toMatchObject({ availableModelIds: [modelId] });
+		fail = true;
+		expect((await models.refresh()).errors.has("github-copilot")).toBe(true);
+		expect(await store.read("github-copilot")).toEqual(credential);
+		expect((await models.getAvailable("github-copilot")).map((model) => model.id)).toEqual([modelId]);
+		expect((await models.getAuth("github-copilot"))?.auth.apiKey).toBe("old-access-token");
+		expect(fetch).toHaveBeenCalledTimes(2);
+	});
+
+	// Regression for #11006: separate runtimes share the credential lock and recheck after waiting.
+	it("serializes concurrent permission refreshes and refreshes changed credentials", async () => {
+		const provider = githubCopilotProvider();
+		const modelId = requireModelId(provider.getModels(), 0);
+		let catalogRequests = 0;
+		stubGitHubCopilotLoginFetch({
+			models: () => {
+				catalogRequests++;
+				return jsonResponse({ data: [{ id: modelId, model_picker_enabled: true }] });
+			},
+		});
+		const store = new InMemoryCredentialStore();
+		const credential = {
+			type: "oauth" as const,
+			access: "old-access-token",
+			refresh: "ghu_refresh_token",
+			expires: Date.now() + 60 * 60 * 1000,
+			availableModelIds: [],
+		};
+		await store.modify("github-copilot", async () => credential);
+		const first = createModels({ credentials: store });
+		const second = createModels({ credentials: store });
+		first.setProvider(provider);
+		second.setProvider(githubCopilotProvider());
+		const results = await Promise.all([first.refresh(), second.refresh()]);
+		expect(results.every((result) => result.errors.size === 0)).toBe(true);
+		expect(catalogRequests).toBe(2);
+		await store.modify("github-copilot", async () => ({ ...credential, access: "changed-account-token" }));
+		expect((await first.refresh()).errors.size).toBe(0);
+		expect(catalogRequests).toBe(3);
+		expect((await first.getAvailable("github-copilot")).map((model) => model.id)).toEqual([modelId]);
+	});
+
 	it("does not retry model catalog throttling during credential refresh", async () => {
 		let catalogRequestCount = 0;
 		vi.stubGlobal(

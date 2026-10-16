@@ -102,7 +102,7 @@ export interface RefreshModelsContext {
 
 export interface ModelsRefreshOptions {
 	allowNetwork?: boolean;
-	/** Restrict refresh to these provider IDs. Unknown and static providers are ignored. */
+	/** Restrict refresh to these provider IDs. Unknown and non-refreshable providers are ignored. */
 	providers?: readonly string[];
 	/** Bypass provider freshness checks and fetch immediately when network access is allowed. */
 	force?: boolean;
@@ -278,8 +278,8 @@ export interface Models {
 	getAllModels(provider?: string): readonly AnyModel[];
 
 	/**
-	 * Refresh selected configured dynamic providers concurrently (all when `providers` is omitted).
-	 * Provider errors and cancellation are returned without rejecting; static, unknown, and
+	 * Refresh selected configured catalogs and credential-owned permissions concurrently.
+	 * Provider errors and cancellation are returned without rejecting; non-refreshable, unknown, and
 	 * unconfigured providers are skipped.
 	 */
 	refresh(options?: ModelsRefreshOptions): Promise<ModelsRefreshResult>;
@@ -536,13 +536,14 @@ class ModelsImpl implements MutableModels {
 	}
 
 	private async runProviderRefreshPhase(
-		provider: Provider & Required<Pick<Provider, "refreshModels">>,
+		provider: Provider,
 		credential: Credential | undefined,
 		allowNetwork: boolean,
 		force: boolean | undefined,
 		generation: number,
 		signal: AbortSignal,
 	): Promise<void> {
+		if (!provider.refreshModels) return;
 		const stored = await this.modelsStore.read(provider.id, { signal });
 		await provider.refreshModels({
 			credential,
@@ -562,8 +563,9 @@ class ModelsImpl implements MutableModels {
 		if (callerSignal.aborted) return { aborted: true, errors };
 		const selected = options.providers ? new Set(options.providers) : undefined;
 		const refreshable = Array.from(this.providers.values()).filter(
-			(provider): provider is Provider & Required<Pick<Provider, "refreshModels">> =>
-				provider.refreshModels !== undefined && (!selected || selected.has(provider.id)),
+			(provider) =>
+				(provider.refreshModels !== undefined || provider.auth.oauth?.refreshModelPermissions) &&
+				(!selected || selected.has(provider.id)),
 		);
 
 		const refresh = Promise.all(
@@ -625,15 +627,26 @@ class ModelsImpl implements MutableModels {
 		if (stored?.type === "oauth") {
 			const oauth = provider.auth.oauth;
 			if (!oauth) return undefined;
-			if (Date.now() < stored.expires) return stored;
+			if (Date.now() < stored.expires && !oauth.refreshModelPermissions) return stored;
 			if (signal.aborted) return undefined;
 			// A refresh that has started survives cancellation or a superseding model refresh, so a
-			// rotated refresh token is always persisted. A newer refresh then sees the fresh credential.
+			// rotated refresh token is always persisted. Permission-only updates use the same store lock.
 			return refreshStoredOAuthCredential(
 				this.credentials,
 				provider.id,
-				oauth,
-				(current) => Date.now() >= current.expires,
+				{
+					...oauth,
+					refresh: (current, refreshSignal) =>
+						Date.now() < current.expires && oauth.refreshModelPermissions
+							? oauth.refreshModelPermissions(current, refreshSignal)
+							: oauth.refresh(current, refreshSignal),
+				},
+				(current) =>
+					Date.now() >= current.expires ||
+					(oauth.refreshModelPermissions !== undefined &&
+						current.access === stored.access &&
+						current.refresh === stored.refresh &&
+						current.expires === stored.expires),
 				signal,
 			);
 		}
