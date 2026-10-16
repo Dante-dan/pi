@@ -2,12 +2,14 @@ import {
 	createModels,
 	createProvider,
 	type ImageModel,
+	InMemoryCredentialStore,
 	InMemoryModelsStore,
 	type Model,
 	type ModelsPublication,
 	type Provider,
 	type RefreshModelsContext,
 } from "@earendil-works/pi-ai";
+import { openaiProvider, personalizeOpenAICatalog } from "@earendil-works/pi-ai/providers/openai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VERSION } from "../src/config.ts";
 import {
@@ -15,6 +17,7 @@ import {
 	REMOTE_CATALOG_MODEL_TYPES,
 	withPersonalizedCatalog,
 	withRemoteCatalog,
+	withCredentialScopedCatalog,
 } from "../src/core/remote-catalog-provider.ts";
 
 const neverAbortedSignal = new AbortController().signal;
@@ -78,6 +81,46 @@ async function refreshProvider(
 afterEach(() => vi.restoreAllMocks());
 
 describe("remote catalog provider", () => {
+	// Regression for #11021: the CLI must restore OAuth limits offline without applying them to another account.
+	it("personalizes OpenAI after the public overlay and restores only for the same credential", async () => {
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("openai", async () => ({
+			type: "oauth",
+			access: "account-a",
+			refresh: "a",
+			expires: Number.MAX_SAFE_INTEGER,
+		}));
+		const store = new InMemoryModelsStore();
+		const provider = withCredentialScopedCatalog(openaiProvider(), personalizeOpenAICatalog);
+		const models = createModels({ credentials, modelsStore: store });
+		models.setProvider(provider);
+		const baseline = models.getModel("openai", "gpt-6.1-sol")!;
+		const publicModel = { ...baseline, contextWindow: 272000 };
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+			String(url).startsWith("https://pi.dev/")
+				? Response.json([publicModel], { headers: { "last-modified": new Date().toUTCString() } })
+				: Response.json({ models: [{ slug: baseline.id, context_window: 500000 }] }),
+		);
+		expect((await models.refresh()).errors.size).toBe(0);
+		expect(models.getModel("openai", baseline.id)?.contextWindow).toBe(500000);
+		expect((await store.read("openai"))?.models).toEqual([publicModel]);
+		await models.refresh({ allowNetwork: false });
+		expect(models.getModel("openai", baseline.id)?.contextWindow).toBe(500000);
+		models.setProvider(withCredentialScopedCatalog(openaiProvider(), personalizeOpenAICatalog));
+		await models.refresh({ allowNetwork: false });
+		expect(models.getModel("openai", baseline.id)?.contextWindow).toBe(500000);
+		await credentials.modify("openai", async () => ({ type: "oauth", access: "account-b", refresh: "b", expires: Number.MAX_SAFE_INTEGER }));
+		await models.refresh({ allowNetwork: false });
+		expect(models.getModel("openai", baseline.id)?.contextWindow).toBe(272000);
+		await models.refresh();
+		await credentials.modify("openai", async () => ({ type: "api_key", key: "key" }));
+		await models.refresh();
+		expect(models.getModel("openai", baseline.id)?.contextWindow).toBe(272000);
+		expect((await models.getAvailable("openai")).find((entry) => entry.id === baseline.id)?.contextWindow).toBe(
+			272000,
+		);
+	});
+
 	it("parses keyed catalogs, sends version headers, observes the refresh TTL, and supports forced refreshes", async () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
 			async () =>

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	type AnyModel,
 	getModelType,
@@ -99,6 +100,58 @@ export type PersonalizeCatalog = (
 	catalog: readonly AnyModel[],
 	context: RefreshModelsContext,
 ) => Promise<readonly AnyModel[]>;
+
+interface CredentialScopedCatalog extends ModelsStoreEntry {
+	credentialCatalog?: { scope: string; models: readonly AnyModel[] };
+}
+
+/** Cache account limits separately from the public catalog and restore only for the same credential. */
+export function withCredentialScopedCatalog(
+	provider: Provider,
+	personalize: PersonalizeCatalog,
+	catalogBaseUrl?: string,
+	localGeneratedAt?: number,
+): Provider {
+	const remote = withRemoteCatalog(provider, catalogBaseUrl, localGeneratedAt);
+	let personalized: readonly AnyModel[] | undefined;
+	const getAllModels = () => personalized ?? remote.getAllModels!();
+	return {
+		...remote,
+		getModels: () => getAllModels().filter((model) => isModelType(model, "chat")),
+		getAllModels,
+		async refreshModels(context) {
+			// Hash the high-entropy access token, never persist it. Token rotation also invalidates the overlay.
+			const scope = context.credential?.type === "oauth"
+				? createHash("sha256").update(JSON.stringify([context.baseUrl ?? provider.baseUrl, context.credential.access])).digest("hex")
+				: undefined;
+			const saved = (context.stored as CredentialScopedCatalog | undefined)?.credentialCatalog;
+			if (!(await context.publish({ update: () => {
+				personalized = scope !== undefined && saved?.scope === scope
+					? saved.models.filter(isSupportedModelType)
+					: undefined;
+			} }))) return;
+			let publicEntry: ModelsStoreEntry = context.stored ?? { models: [] };
+			try {
+				await remote.refreshModels!({ ...context, publish: async (publication) => {
+					if (publication.persist) publicEntry = publication.persist;
+					return context.publish(publication);
+				} });
+			} finally {
+				if (context.allowNetwork && !context.signal.aborted) {
+					// Keep only public data before fetching, so an account request failure cannot revive stale limits.
+					const { credentialCatalog: _saved, ...publicCatalog } = publicEntry as CredentialScopedCatalog;
+					await context.publish({ persist: publicCatalog, update: () => { personalized = undefined; } });
+					context.signal.throwIfAborted();
+					const models = await personalize(remote.getAllModels!(), context);
+					const entry: CredentialScopedCatalog = scope === undefined ? publicCatalog : {
+						...publicCatalog, credentialCatalog: { scope, models },
+					};
+					await context.publish({ persist: entry, update: () => { personalized = models; } });
+				}
+			}
+		},
+	};
+}
 
 /** Add a persisted pi.dev catalog overlay to a static built-in provider. */
 export function withRemoteCatalog(
