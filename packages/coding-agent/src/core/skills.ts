@@ -323,13 +323,13 @@ function loadSkillFromFile(
 	// Validate name
 	const nameErrors = validateName(name);
 	for (const error of nameErrors) {
-		const nameSource = frontmatterName ? "frontmatter name" : "directory-derived name";
+		const nameSource = frontmatterName ? "frontmatter `name`" : "directory-derived name";
 		const loadOutcome = hasDescription
-			? "Skill file is still loaded."
+			? "Skill file is still loaded with its name unchanged."
 			: "Skill is skipped because description is missing or empty.";
 		diagnostics.push({
 			type: "warning",
-			message: `${error.replace(/^name/, nameSource)}. Use a valid slug such as "my-skill". ${loadOutcome}`,
+			message: `${error.replace(/^name/, nameSource)}. Use 1-${MAX_NAME_LENGTH} lowercase a-z, 0-9 or hyphen characters, with no leading, trailing or consecutive hyphens (for example, "my-skill"). ${loadOutcome}`,
 			path: filePath,
 		});
 	}

@@ -65,14 +65,16 @@ describe("skills", () => {
 			expect(diagnostics.some((d: ResourceDiagnostic) => d.message.includes("invalid characters"))).toBe(true);
 		});
 
-		// Regression: #10919 — identify the name source and report the actual file load outcome.
+		// Regression: #10919 — identify the field, naming rules and actual file load outcome.
 		it.each([
-			["Purple Team & Adversary Emulation", "22-purple-team", true, "frontmatter name"],
-			[undefined, "Invalid_Directory", true, "directory-derived name"],
-			["Purple Team & Adversary Emulation", "22-purple-team", false, "frontmatter name"],
+			["Purple Team & Adversary Emulation", "22-purple-team", true, "frontmatter `name`", "invalid characters"],
+			[undefined, "Invalid_Directory", true, "directory-derived name", "invalid characters"],
+			["Purple Team & Adversary Emulation", "22-purple-team", false, "frontmatter `name`", "invalid characters"],
+			["a".repeat(65), "long-name", true, "frontmatter `name`", "exceeds 64 characters"],
+			["my--skill", "consecutive-hyphens", true, "frontmatter `name`", "consecutive hyphens"],
 		])(
 			"should explain invalid name warnings (%s, %s, description: %s)",
-			(name, directory, hasDescription, nameSource) => {
+			(name, directory, hasDescription, nameSource, error) => {
 				const root = mkdtempSync(join(tmpdir(), "pi-skill-name-"));
 				try {
 					const dir = join(root, directory);
@@ -88,12 +90,14 @@ describe("skills", () => {
 					const { skills, diagnostics } = loadSkillsFromDir({ dir, source: "test" });
 					expect(skills).toHaveLength(hasDescription ? 1 : 0);
 					if (hasDescription) expect(skills[0].name).toBe(name ?? directory);
-					const warning = diagnostics.find((d) => d.message.includes("invalid characters"));
-					expect(warning?.message).toContain(`${nameSource} contains invalid characters`);
-					expect(warning?.message).toContain('Use a valid slug such as "my-skill".');
+					const warning = diagnostics.find((d) => d.message.includes(error));
+					expect(warning?.message).toContain(nameSource);
+					expect(warning?.message).toContain(
+						'Use 1-64 lowercase a-z, 0-9 or hyphen characters, with no leading, trailing or consecutive hyphens (for example, "my-skill").',
+					);
 					expect(warning?.message).toContain(
 						hasDescription
-							? "Skill file is still loaded."
+							? "Skill file is still loaded with its name unchanged."
 							: "Skill is skipped because description is missing or empty.",
 					);
 					expect(warning?.path).toBe(join(dir, "SKILL.md"));
