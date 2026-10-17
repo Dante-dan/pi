@@ -627,7 +627,8 @@ async function refreshModelCatalogs(agentDir: string): Promise<void> {
 	} finally {
 		clearTimeout(timeout);
 	}
-	console.log(chalk.green("Model catalogs refreshed"));
+	console.log(chalk.green("Model catalogs refreshed (built-in and models.json providers only)."));
+	console.log("Extension provider catalogs were skipped; extensions are not loaded by this command.");
 }
 
 function printSelfUpdateUnavailable(

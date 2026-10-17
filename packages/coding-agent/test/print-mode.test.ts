@@ -91,6 +91,18 @@ afterEach(() => {
 });
 
 describe("runPrintMode", () => {
+	// #10623: warnings must reach stderr without corrupting text or JSON stdout.
+	it.each(["text", "json"] as const)("reports model fallback on stderr in %s mode", async (mode) => {
+		const runtimeHost = {
+			...createRuntimeHost(createAssistantMessage({ text: "done" })),
+			modelFallbackMessage: "Could not use default model stale/model-b. Using stale/model-a.",
+		};
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		expect(await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], { mode })).toBe(0);
+		expect(errorSpy).toHaveBeenCalledWith(`Warning: ${runtimeHost.modelFallbackMessage}`);
+	});
+
 	it("emits session_shutdown in text mode", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
 		const { session } = runtimeHost;

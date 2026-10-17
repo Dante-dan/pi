@@ -119,6 +119,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	};
 
 	try {
+		if (runtimeHost.modelFallbackMessage) {
+			console.error(`Warning: ${runtimeHost.modelFallbackMessage}`);
+		}
 		if (mode === "json") {
 			const header = session.sessionManager.getHeader();
 			if (header) {

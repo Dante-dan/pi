@@ -561,6 +561,7 @@ export async function findInitialModel(options: {
 
 	let model: Model<Api> | undefined;
 	let thinkingLevel: ThinkingLevel = DEFAULT_THINKING_LEVEL;
+	let defaultFailure: string | undefined;
 
 	// 1. Use first model from scoped models (skip if continuing/resuming)
 	if (scopedModels.length > 0 && !isContinuing) {
@@ -586,6 +587,7 @@ export async function findInitialModel(options: {
 			}
 			return { model, thinkingLevel, fallbackMessage: undefined };
 		}
+		defaultFailure = `Could not use default model ${defaultProvider}/${defaultModelId} (${found ? "no auth configured" : "model not found in catalog"}).`;
 	}
 
 	// 3. Try first available model with valid API key
@@ -597,12 +599,18 @@ export async function findInitialModel(options: {
 			const defaultId = defaultModelPerProvider[provider];
 			const match = availableModels.find((m) => m.provider === provider && m.id === defaultId);
 			if (match) {
-				return { model: match, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
+				model = match;
+				break;
 			}
 		}
 
 		// If no default found, use first available
-		return { model: availableModels[0], thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
+		model ??= availableModels[0];
+		return {
+			model,
+			thinkingLevel: DEFAULT_THINKING_LEVEL,
+			fallbackMessage: defaultFailure ? `${defaultFailure} Using ${model.provider}/${model.id}.` : undefined,
+		};
 	}
 
 	// 4. No model found
