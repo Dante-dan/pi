@@ -15,6 +15,9 @@
  *
  * Run from the repository root:
  *   node --experimental-strip-types packages/tui/test/alt-screen-large-transcript-bench.ts
+ * For regular-mode steady/spinner/streaming frames with the same transcript:
+ *   PI_BENCH_MODE=regular node packages/tui/test/alt-screen-large-transcript-bench.ts
+ * Output is discarded; this measures renderer CPU/wall time, not terminal parsing.
  */
 
 import { performance } from "node:perf_hooks";
@@ -25,11 +28,14 @@ import { VStack } from "../src/components/v-stack.ts";
 import type { Terminal } from "../src/terminal.ts";
 import { Container } from "../src/tui.ts";
 import { TuiAltScreen } from "../src/tui-alt-screen.ts";
+import { TuiMainScreen } from "../src/tui-main-screen.ts";
 
 const COLUMNS = 80;
 const ROWS = 50;
 const COMPONENT_COUNT = 2_500;
 const WARMUP_FRAMES = 20;
+// #9549: reuse the same large transcript to measure regular-mode line resets.
+const regularMode = process.env.PI_BENCH_MODE === "regular";
 
 const theme: MarkdownTheme = {
 	heading: (text) => text,
@@ -134,8 +140,16 @@ const root = new VStack([
 	{ component: dock, basis: "auto", minSize: 1 },
 ]);
 const terminal = new NullTerminal();
-const tui = new TuiAltScreen(terminal, false, "/tmp/pi-tui-bench");
-tui.setLayoutRoot(root);
+const tui = regularMode
+	? new TuiMainScreen(terminal, false, "/tmp/pi-tui-bench")
+	: new TuiAltScreen(terminal, false, "/tmp/pi-tui-bench");
+const status = new Text("spinner 0", 0, 0);
+if (regularMode) {
+	tui.addChild(document);
+	tui.addChild(status);
+} else if (tui instanceof TuiAltScreen) {
+	tui.setLayoutRoot(root);
+}
 tui.start();
 tui.renderNow();
 
@@ -144,19 +158,30 @@ transcript.scrollTo(Math.floor(totalLines / 2));
 for (let frame = 0; frame < WARMUP_FRAMES; frame++) tui.renderNow();
 
 function measure(name: string, frames: number, beforeFrame: (frame: number) => void): void {
+	const cpuStart = process.cpuUsage();
 	const start = performance.now();
 	for (let frame = 0; frame < frames; frame++) {
 		beforeFrame(frame);
 		tui.renderNow();
 	}
 	const millisecondsPerFrame = (performance.now() - start) / frames;
-	console.log(`${name}: ${millisecondsPerFrame.toFixed(3)} ms/frame (${frames} frames)`);
+	const cpu = process.cpuUsage(cpuStart);
+	const cpuMillisecondsPerFrame = (cpu.user + cpu.system) / 1000 / frames;
+	console.log(
+		`${name}: ${millisecondsPerFrame.toFixed(3)} ms/frame, ${cpuMillisecondsPerFrame.toFixed(3)} CPU ms/frame (${frames} frames)`,
+	);
 }
 
-console.log(`components=${COMPONENT_COUNT} lines=${totalLines} viewport=${terminal.columns}x${terminal.rows}`);
+console.log(
+	`mode=${regularMode ? "regular" : "fullscreen"} components=${COMPONENT_COUNT} lines=${totalLines} viewport=${terminal.columns}x${terminal.rows}`,
+);
 measure("steady", 200, () => {});
-transcript.scrollTo(Math.floor(totalLines / 2));
-measure("scroll", 200, () => transcript.scrollBy(1));
+if (regularMode) {
+	measure("spinner", 200, (frame) => status.setText(`spinner ${frame % 4}`));
+} else {
+	transcript.scrollTo(Math.floor(totalLines / 2));
+	measure("scroll", 200, () => transcript.scrollBy(1));
+}
 measure("streaming", 100, (frame) => {
 	streamingMarkdown.setText(`${assistantMarkdown}\n\nstream ${"x".repeat(frame + 1)}`);
 });
