@@ -1067,7 +1067,8 @@ export class AgentSession {
 	}
 
 	private _resolveIdleWaitIfIdle(): void {
-		if (!this.isIdle || !this._resolveIdleWait) {
+		// Settled handlers can compact while idle, then queue a deferred continuation.
+		if (!this.isIdle || this._isEmittingAgentSettled || !this._resolveIdleWait) {
 			return;
 		}
 		const resolve = this._resolveIdleWait;

@@ -26,6 +26,66 @@ describe("regression #6363: agent settled event and idle waiting", () => {
 		}
 	});
 
+	// Regression #10704: compaction must not release an existing waiter inside a settled handler.
+	it.each([false, true])("waits through settled-handler compaction (continuation: %s)", async (continueRun) => {
+		let handled = false;
+		let idleWait: Promise<void> | undefined;
+		const lifecycle: string[] = [];
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 0 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", (event) => ({
+						compaction: {
+							summary: "Checkpoint",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+						},
+					}));
+					pi.on("agent_settled", async (_event, ctx) => {
+						if (handled) {
+							lifecycle.push("continuation-settled");
+							return;
+						}
+						handled = true;
+						expect(ctx.isIdle()).toBe(true);
+						await new Promise<void>((resolve, reject) =>
+							ctx.compact({ onComplete: () => resolve(), onError: reject }),
+						);
+						lifecycle.push("compact-complete");
+						if (continueRun) {
+							pi.sendMessage(
+								{ customType: "continue", content: "Continue", display: false },
+								{ triggerTurn: true },
+							);
+						}
+						lifecycle.push("handler-complete");
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.session.subscribe((event) => {
+			if (event.type === "agent_start" && !idleWait) {
+				idleWait = harness.session.waitForIdle().then(() => {
+					lifecycle.push("idle-resolved");
+				});
+			}
+		});
+		harness.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+
+		await harness.session.prompt("start");
+		await idleWait;
+
+		expect(harness.faux.state.callCount).toBe(continueRun ? 2 : 1);
+		expect(lifecycle).toEqual([
+			"compact-complete",
+			"handler-complete",
+			...(continueRun ? ["continuation-settled"] : []),
+			"idle-resolved",
+		]);
+	});
+
 	it("emits one agent_settled event after automatic retry finishes", async () => {
 		const extensionEvents: string[] = [];
 		const publicEvents: string[] = [];
