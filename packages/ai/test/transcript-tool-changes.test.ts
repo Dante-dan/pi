@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { describe, expect, test } from "vitest";
 import { getModel, streamSimple } from "../src/compat.ts";
-import type { Api, Context, Model, Tool } from "../src/types.ts";
+import type { Api, AssistantMessage, Context, Model, Tool } from "../src/types.ts";
 
 class PayloadCaptured extends Error {}
 
@@ -94,6 +94,42 @@ interface AnthropicPayload {
 }
 
 describe("transcript system messages", () => {
+	// #11091: a discarded cross-provider reasoning turn is not an assistant boundary.
+	test.each([false, true])(
+		"holds Anthropic updates past empty assistants (later assistant: %s)",
+		async (laterAssistant) => {
+			const emptyAssistant: AssistantMessage = {
+				role: "assistant",
+				content: [{ type: "thinking", thinking: "", thinkingSignature: '{"type":"reasoning"}' }],
+				api: "openai-codex-responses",
+				provider: "openai-codex",
+				model: "gpt-x",
+				stopReason: "stop",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				timestamp: 3,
+			};
+			const payload = await capturePayload<AnthropicPayload>(anthropicNativeModel, {
+				messages: [
+					...additionContext.messages,
+					emptyAssistant,
+					{ role: "user", content: "after", timestamp: 4 },
+					...(laterAssistant ? [{ ...emptyAssistant, content: [{ type: "text" as const, text: "answer" }] }] : []),
+				],
+			});
+			expect(payload.messages.map((message) => message.role)).toEqual(
+				laterAssistant ? ["user", "user", "system", "assistant"] : ["user", "user", "system"],
+			);
+			expect(payload.messages[2]?.content).toContainEqual({ type: "text", text: "updated guidance" });
+		},
+	);
+
 	test("sends Anthropic updates and tool changes in native system messages", async () => {
 		const payload = await capturePayload<AnthropicPayload>(anthropicNativeModel, context);
 

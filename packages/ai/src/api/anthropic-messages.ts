@@ -1429,7 +1429,6 @@ function convertMessages(
 				});
 			}
 		} else if (msg.role === "assistant") {
-			flushPendingSystemMessages();
 			const blocks: ContentBlockParam[] = [];
 
 			for (const block of msg.content) {
@@ -1484,6 +1483,7 @@ function convertMessages(
 				}
 			}
 			if (blocks.length === 0) continue;
+			flushPendingSystemMessages();
 			const messageIndex = params.length;
 			params.push({
 				role: "assistant",
