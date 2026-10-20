@@ -24,12 +24,19 @@ export function createInitialSystemMessage(
 
 /**
  * Fold `Context.systemPrompt` and `Context.tools` into a leading system message.
+ * Otherwise move the first recorded system message ahead of earlier context messages,
+ * keeping later system updates in place. Session startup extensions can record context
+ * before the initial prompt is declared.
  * This is the only entry point that produces a {@link TranscriptContext}; every
  * provider-facing function expects the result.
  */
 export function normalizeContext(context: Context): TranscriptContext {
 	const initialMessage = createInitialSystemMessage(context.systemPrompt, context.tools);
-	const messages = initialMessage ? [initialMessage, ...context.messages] : context.messages;
+	let messages = initialMessage ? [initialMessage, ...context.messages] : context.messages;
+	const systemIndex = messages.findIndex((message) => message.role === "system");
+	if (systemIndex > 0) {
+		messages = [messages[systemIndex], ...messages.slice(0, systemIndex), ...messages.slice(systemIndex + 1)];
+	}
 	return { messages } as TranscriptContext;
 }
 

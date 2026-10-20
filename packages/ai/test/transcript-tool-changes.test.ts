@@ -56,6 +56,8 @@ const context: Context = {
 };
 const additionContext: Context = {
 	messages: [
+		// #11157: session_start extensions can append context before pi declares its prompt.
+		{ role: "user", content: "startup context", timestamp: 0 },
 		{ role: "system", content: "base prompt", toolsAdded: [baseTool], timestamp: 0 },
 		{ role: "user", content: "before", timestamp: 1 },
 		{ role: "system", content: "updated guidance", toolsAdded: [lateTool], timestamp: 2 },
@@ -95,7 +97,10 @@ interface AnthropicPayload {
 
 describe("transcript system messages", () => {
 	test("sends Anthropic updates and tool changes in native system messages", async () => {
-		const payload = await capturePayload<AnthropicPayload>(anthropicNativeModel, context);
+		// #11157: leading extension context must not turn the initial prompt into an update.
+		const payload = await capturePayload<AnthropicPayload>(anthropicNativeModel, {
+			messages: [{ role: "user", content: "startup context", timestamp: 0 }, ...context.messages],
+		});
 
 		expect(payload.betas).toContain("inline-tools-2026-09-15");
 		expect(payload.betas).not.toContain("mid-conversation-tool-changes-2026-07-01");

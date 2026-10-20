@@ -7,6 +7,7 @@ import {
 	declarationsEqual,
 	getCurrentSystemMessage,
 	getCurrentSystemPrompt,
+	getInitialSystemMessage,
 	getToolStateChanges,
 	hasNonAdditiveToolChanges,
 	hasToolRedefinitions,
@@ -80,6 +81,9 @@ describe("system message replay", () => {
 			],
 		});
 		expect(getCurrentSystemPrompt(context.messages)).toBe("You are pi.");
+		// #11157: startup context must not hide the initial prompt from providers.
+		expect(context.messages.map((message) => message.role)).toEqual(["system", "user"]);
+		expect(getInitialSystemMessage(context.messages)?.toolsAdded).toEqual([tool("x")]);
 		expect(collapseSystemMessages(context).messages[0]).toMatchObject({ role: "system", toolsAdded: [tool("x")] });
 	});
 
