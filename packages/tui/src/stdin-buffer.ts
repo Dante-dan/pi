@@ -22,6 +22,8 @@ import { EventEmitter } from "events";
 const ESC = "\x1b";
 const DEFAULT_SEQUENCE_TIMEOUT_MS = 50;
 const DEFAULT_ESCAPE_TIMEOUT_MS = 10;
+const MAX_SGR_MOUSE_SEQUENCE_LENGTH = 64;
+const SGR_MOUSE_PREFIX_PATTERN = /^\x1b\[<\d*(?:;\d*){0,2}$/;
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 // Color and program-status OSC replies, XTVersion, and Kitty graphics replies.
@@ -208,6 +210,7 @@ function extractCompleteSequences(buffer: string): { sequences: string[]; remain
 		// Try to extract a sequence starting at this position
 		if (remaining.startsWith(ESC)) {
 			const terminalReply = isControlString(remaining) && TERMINAL_REPLY_HEADER_PATTERN.test(remaining);
+			const sgrMouse = remaining.startsWith(`${ESC}[<`);
 			// Find the end of this escape sequence
 			let seqEnd = 1;
 			while (seqEnd <= remaining.length) {
@@ -226,6 +229,19 @@ function extractCompleteSequences(buffer: string): { sequences: string[]; remain
 					}
 				}
 				const candidate = remaining.slice(0, seqEnd);
+				if (sgrMouse && seqEnd > 3 && !/^\x1b\[<\d+;\d+;\d+[Mm]$/.test(candidate)) {
+					const char = remaining[seqEnd - 1];
+					if (char === "\x18" || char === "\x1a") {
+						pos += seqEnd;
+						break;
+					}
+					if (!SGR_MOUSE_PREFIX_PATTERN.test(candidate) || seqEnd > MAX_SGR_MOUSE_SEQUENCE_LENGTH) {
+						// Discard an abandoned report, but reparse the first non-report
+						// byte so keyboard input (including a new ESC) is preserved.
+						pos += seqEnd - 1;
+						break;
+					}
+				}
 				const status = isCompleteSequence(candidate);
 
 				if (status === "complete") {
@@ -280,8 +296,8 @@ function extractCompleteSequences(buffer: string): { sequences: string[]; remain
 
 export type StdinBufferOptions = {
 	/**
-	 * Maximum time to wait for an incomplete keyboard or mouse sequence
-	 * (default: 50ms). Strings with a recognized terminal reply header wait for
+	 * Maximum time to wait for an incomplete keyboard sequence
+	 * (default: 50ms). Recognized SGR mouse reports and terminal reply strings wait for
 	 * their terminator instead, so delayed replies cannot become keypresses.
 	 * Ambiguous legacy Alt-key input still uses this timeout.
 	 */
@@ -409,11 +425,11 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 
 		if (this.buffer.length > 0) {
-			// Only a recognizable reply header establishes a delimited string.
-			// Flushing it would turn a delayed tail into text and an OSC's BEL
+			// Recognized mouse reports and reply headers establish delimited input.
+			// Flushing them would turn a delayed tail into text and an OSC's BEL
 			// terminator into Ctrl+G (the external editor shortcut). Other input,
 			// including Alt+] followed by text, must retain bounded recovery.
-			if (TERMINAL_REPLY_HEADER_PATTERN.test(this.buffer)) return;
+			if (TERMINAL_REPLY_HEADER_PATTERN.test(this.buffer) || SGR_MOUSE_PREFIX_PATTERN.test(this.buffer)) return;
 			const timeoutMs = this.buffer === ESC ? this.escapeTimeoutMs : this.timeoutMs;
 			this.timeout = setTimeout(() => {
 				const flushed = this.flush();

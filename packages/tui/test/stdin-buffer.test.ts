@@ -128,13 +128,13 @@ describe("StdinBuffer", () => {
 		});
 
 		it("should flush incomplete sequence after timeout", async () => {
-			processInput("\x1b[<35");
+			processInput("\x1b[1;");
 			assert.deepStrictEqual(emittedSequences, []);
 
 			// Wait for timeout
 			await wait(15);
 
-			assert.deepStrictEqual(emittedSequences, ["\x1b[<35"]);
+			assert.deepStrictEqual(emittedSequences, ["\x1b[1;"]);
 		});
 
 		it("should flush a lone ESC as Escape when CR arrives after the timeout", async () => {
@@ -439,6 +439,33 @@ describe("StdinBuffer", () => {
 	});
 
 	describe("Mouse Events", () => {
+		// Regression for #11172: a timeout must not turn an SGR report's tail into typed text.
+		it("keeps a delayed SGR report intact and recovers from abandoned reports", (t) => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			processInput("\x1b[<35;4");
+			t.mock.timers.tick(40);
+			assert.deepStrictEqual(emittedSequences, []);
+			processInput("8;27Mx");
+			assert.deepStrictEqual(emittedSequences, ["\x1b[<35;48;27M", "x"]);
+
+			processInput("\x1b[<35;4");
+			t.mock.timers.tick(40);
+			processInput("\x1b");
+			t.mock.timers.tick(10);
+			assert.deepStrictEqual(emittedSequences.slice(-1), ["\x1b"]);
+
+			processInput("\x1b[<35;4");
+			processInput("\x18hello");
+			assert.deepStrictEqual(emittedSequences.slice(-5), [..."hello"]);
+
+			processInput("\x1b[<35;4");
+			processInput("\r");
+			assert.deepStrictEqual(emittedSequences.slice(-1), ["\r"]);
+
+			processInput(`\x1b[<${"1".repeat(100)}`);
+			assert.strictEqual(buffer.getBuffer(), "");
+		});
+
 		it("should handle mouse press event", () => {
 			processInput("\x1b[<0;10;5M");
 			assert.deepStrictEqual(emittedSequences, ["\x1b[<0;10;5M"]);
@@ -545,13 +572,13 @@ describe("StdinBuffer", () => {
 		});
 
 		it("should emit flushed data via timeout", async () => {
-			processInput("\x1b[<35");
+			processInput("\x1b[1;");
 			assert.deepStrictEqual(emittedSequences, []);
 
 			// Wait for timeout to flush
 			await wait(15);
 
-			assert.deepStrictEqual(emittedSequences, ["\x1b[<35"]);
+			assert.deepStrictEqual(emittedSequences, ["\x1b[1;"]);
 		});
 	});
 
