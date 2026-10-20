@@ -32,11 +32,17 @@ import {
 } from "./inbox.ts";
 import { LiveDoc } from "./live.ts";
 import { DURABLE_TELEMETRY_SCHEMA } from "./telemetry.ts";
-import type { InputEntry, SettledSubmissionRecord, Submission, SubmissionDraft, UserInput } from "./types.ts";
+import type {
+	InputEntry,
+	SettledSubmissionRecord,
+	Submission,
+	SubmissionAdmission,
+	SubmissionDraft,
+	UserInput,
+} from "./types.ts";
 import { closedError, Waiters } from "./util.ts";
 
 type AbortResult = "aborted" | "already_placed" | "settled";
-type Admission = { readonly id: SubmissionId; readonly status: "queued" | "placed" | "done" };
 
 /** Admission, waits, and withdrawal of the durable submissions of one Harness. */
 export class Submissions {
@@ -75,29 +81,53 @@ export class Submissions {
 	/** Admit a submission in one commit; see `admitSubmission()`. */
 	async submit(conversationId: ConversationId, draft: SubmissionDraft, context: Context): Promise<Submission> {
 		this.#resume();
-		const parent = draft.type === "input" ? this.#telemetry : context.telemetry;
-		return createTypedSpanStarter(parent, [DURABLE_TELEMETRY_SCHEMA])(
-			"pi.durable.submit",
-			{
-				"submission.type": draft.type,
-				"conversation.id": conversationId,
-			},
-			async (span) => {
-				if (draft.type === "input") span.addLink({ context: context.telemetry });
-				try {
-					const { id, status } = await this.#session.commitWith(
-						(tx) => admitSubmission(tx, conversationId, draft, this.#now(), this.#queueModes(), span),
-						withTelemetry(span, context),
-					);
-					span.setAttributes({ "submission.id": id, result: status });
-					return new SubmissionHandle(id, this);
-				} catch (error) {
-					// Error text may contain caller content. Record only the status.
-					span.setStatus({ status: "error" });
-					throw error;
-				}
-			},
+		const { id } = await this.#traceAdmission("pi.durable.submit", conversationId, draft, context, (span) =>
+			this.#session.commitWith(
+				(tx) => admitSubmission(tx, conversationId, draft, this.#now(), this.#queueModes(), span),
+				withTelemetry(span, context),
+			),
 		);
+		return new SubmissionHandle(id, this);
+	}
+
+	/** Use the caller's transaction without opening a nested commit. */
+	admit(
+		tx: Tx,
+		conversationId: ConversationId,
+		draft: SubmissionDraft,
+		context: Context,
+	): Promise<SubmissionAdmission> {
+		this.#resume();
+		return this.#traceAdmission("pi.durable.admit", conversationId, draft, context, (span) =>
+			admitSubmission(tx, conversationId, draft, this.#now(), this.#queueModes(), span),
+		);
+	}
+
+	#traceAdmission(
+		name: "pi.durable.submit" | "pi.durable.admit",
+		conversationId: ConversationId,
+		draft: SubmissionDraft,
+		context: Context,
+		admit: (span: TelemetrySpan) => Promise<SubmissionAdmission>,
+	): Promise<SubmissionAdmission> {
+		const parent = draft.type === "input" ? this.#telemetry : context.telemetry;
+		const startSpan = createTypedSpanStarter(parent, [DURABLE_TELEMETRY_SCHEMA]);
+		const attributes = { "submission.type": draft.type, "conversation.id": conversationId };
+		const onSpan = async (span: TelemetrySpan): Promise<SubmissionAdmission> => {
+			if (draft.type === "input") span.addLink({ context: context.telemetry });
+			try {
+				const { id, status } = await admit(span);
+				span.setAttributes({ "submission.id": id, result: status });
+				return { id, status };
+			} catch (error) {
+				// Error text may contain caller content. Record only the status.
+				span.setStatus({ status: "error" });
+				throw error;
+			}
+		};
+		return name === "pi.durable.submit"
+			? startSpan("pi.durable.submit", attributes, onSpan)
+			: startSpan("pi.durable.admit", attributes, onSpan);
 	}
 
 	/** Handle for an existing submission, or `undefined`. */
@@ -205,7 +235,7 @@ export async function admitSubmission(
 	now: number,
 	queueModes: QueueModes,
 	span?: TelemetrySpan,
-): Promise<Admission> {
+): Promise<SubmissionAdmission> {
 	if (draft.type === "input" && draft.entry !== undefined) checkInputEntry(draft.entry);
 	if (draft.requestId !== undefined) {
 		const existing = await tx.submissionByRequest(conversationId, draft.requestId);

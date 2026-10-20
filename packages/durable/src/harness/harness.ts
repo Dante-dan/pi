@@ -59,6 +59,7 @@ import type {
 	RegistrySnapshot,
 	SettledTask,
 	Submission,
+	SubmissionAdmission,
 	SubmissionDraft,
 	ToolRegistration,
 	Wake,
@@ -115,6 +116,10 @@ class ConversationImpl<Tool extends ToolRegistration> implements Conversation {
 
 	submit(submission: SubmissionDraft, context: Context): Promise<Submission> {
 		return this.#host.submissions.submit(this.id, submission, context);
+	}
+
+	admit(tx: Tx, submission: SubmissionDraft, context: Context): Promise<SubmissionAdmission> {
+		return this.#host.submissions.admit(tx, this.id, submission, context);
 	}
 
 	compact(instructions: string | undefined, context: Context): Promise<TaskId<CompactionResult>> {

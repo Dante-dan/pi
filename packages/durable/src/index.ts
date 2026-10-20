@@ -107,6 +107,7 @@ export type {
 	SettledSubmissionRecord,
 	SettledTask,
 	Submission,
+	SubmissionAdmission,
 	SubmissionDraft,
 	TaskInspection,
 	ToolControl,

@@ -518,6 +518,23 @@ await root.submit({ type: "write", entry: { kind: "app.note", data: "user opened
 
 If a run fails, queued items stay in the inbox until the next input or queued write places them, oldest first.
 
+When a host must check its own state before admitting input, use `conversation.admit(tx, draft, context)` inside
+`harness.commit()` or `conversation.commit()`. It applies the same request-ID deduplication, queueing, boundary, and
+trace rules as `submit()`, without opening another commit. For example, a steer that must never start its own run:
+
+```typescript
+const admission = await harness.commit(async (tx) => {
+	if ((await tx.doc(LiveDoc, root.id)).run === undefined) throw new Error("The agent is not working");
+	return root.admit(tx, { type: "input", content: "Use pnpm", whenBusy: "steer", requestId: "message-1" }, context);
+}, context);
+const submission = await harness.submission(admission.id, context);
+```
+
+Import `LiveDoc` from `@earendil-works/pi-durable`. Await admission inside a commit of the same Harness, after host
+checks and before host writes: admission may read tables. Its `{ id, status }` result is provisional until the host
+commit succeeds; a later exception rolls admission back with the host's writes. Admission enables scheduling like
+`submit()`. Its trace records admission only; the host's commit context owns commit events and failures.
+
 An input is placed as a `pi.user` entry. To show it as something else, give it an `entry` with your kind and data; the model still sees `content` as the user message:
 
 ```typescript

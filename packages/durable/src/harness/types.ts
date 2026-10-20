@@ -711,6 +711,9 @@ export type ContextView = {
 	readonly messages: readonly Message[];
 };
 
+/** Admission result in a transaction; durable only after the enclosing commit succeeds. */
+export type SubmissionAdmission = { readonly id: SubmissionId; readonly status: "queued" | "placed" | "done" };
+
 /** Stateless handle for one conversation, bound to the Harness that returned it. Compare handles by `id`. */
 export interface Conversation {
 	readonly id: ConversationId;
@@ -727,6 +730,12 @@ export interface Conversation {
 	 * even mid-run, as it changes nothing the model sees.
 	 */
 	submit(submission: SubmissionDraft, context: Context): Promise<Submission>;
+	/**
+	 * Apply the same admission rules as `submit()` inside a commit of this Harness. Await this in the commit callback,
+	 * after host checks and before host writes (admission may read tables). Returns a provisional ID/status, not a
+	 * committed handle: the enclosing commit can still roll back. Admission asks the Harness scheduler for progress.
+	 */
+	admit(tx: Tx, submission: SubmissionDraft, context: Context): Promise<SubmissionAdmission>;
 	/**
 	 * Admit a write of a `pi.reset` entry that starts a new context, carrying `handoff` as a user message when given.
 	 * Resolves after admission; while busy, it is placed at the next boundary.

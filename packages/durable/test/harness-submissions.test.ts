@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withTelemetry } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import {
 	AssistantEntry,
@@ -8,12 +9,14 @@ import {
 	defineEntry,
 	type EntryId,
 	GenerationTask,
+	Harness,
 	LiveDoc,
 	type SubmissionCreate,
 	type SubmissionId,
 	type SubmissionRecord,
 	UserEntry,
 } from "@earendil-works/pi-durable";
+import { InMemoryTelemetryContext } from "@earendil-works/pi-telemetry";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SessionImpl } from "../src/session/session.ts";
 import { openNodeSqliteStorage } from "../src/storage/sqlite/node.ts";
@@ -35,6 +38,76 @@ async function sqlitePath(): Promise<string> {
 }
 
 describe("submissions", () => {
+	// Issue #11149: host checks and Pi admission must share one commit, including tracing and deduplication.
+	it("admits a steer with host checks and writes in one transaction", async () => {
+		const storage = new ControlledStorage();
+		const setup = chatSetup();
+		const busy = unanswered();
+		setup.faux.setResponses([busy.step]);
+		const telemetry = new InMemoryTelemetryContext();
+		const harness = await Harness.open(
+			storage,
+			{ models: setup.models, registry: setup.registry, telemetry },
+			context,
+		);
+		const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+		await root.submit({ type: "input", content: "work" }, context);
+		await busy.reached;
+		const commits = storage.commits.length;
+		const run = (await harness.snapshot(LiveDoc, root.id, context))!.run!;
+		const task = (await harness.getTask(run.taskId, context))!;
+		const draft = { type: "input", content: "steer", whenBusy: "steer", requestId: "host-steer" } as const;
+		const admission = await telemetry.startSpan({ name: "host-check" }, (span) => {
+			const ctx = withTelemetry(span, context);
+			return harness.commit(async (tx) => {
+				if ((await tx.doc(LiveDoc, root.id)).run === undefined) throw new Error("Not working");
+				const admitted = await root.admit(tx, draft, ctx);
+				await tx.appendEntry(root.id, { kind: "app.accepted", data: { submission: admitted.id } });
+				return admitted;
+			}, ctx);
+		});
+		expect(admission.status).toBe("queued");
+		expect(storage.commits.length).toBe(commits + 1);
+		const span = telemetry.getSpans().find((span) => span.name === "pi.durable.admit")!;
+		expect(span.links).toEqual([
+			{ context: telemetry.getSpans().find((span) => span.name === "host-check")!.context, attributes: {} },
+			{ context: task.trace, attributes: {} },
+		]);
+		expect(await (await harness.submission(admission.id, context))!.status(context)).toMatchObject({
+			status: "queued",
+			trace: span.context,
+			requestId: "host-steer",
+		});
+		expect(await harness.commit((tx) => root.admit(tx, draft, context), context)).toEqual(admission);
+		expect(storage.commits.length).toBe(commits + 1);
+		await harness.close(context);
+	});
+
+	// Issue #11149: the result is provisional until the host transaction commits.
+	it("rolls back admission and host writes together", async () => {
+		const storage = new ControlledStorage();
+		const { harness, root } = await openChat(storage, chatSetup());
+		const commits = storage.commits.length;
+		await expect(
+			harness.commit(async (tx) => {
+				await root.admit(tx, { type: "write", entry: { kind: "note" }, requestId: "rollback" }, context);
+				await tx.appendEntry(root.id, { kind: "app.accepted" });
+				throw new Error("Host refused");
+			}, context),
+		).rejects.toThrow("Host refused");
+		expect(storage.commits.length).toBe(commits);
+		expect(await harness.commit((tx) => tx.submissionByRequest(root.id, "rollback"), context)).toBeUndefined();
+		expect(await allEntries(root)).toEqual([]);
+		await expect(
+			harness.commit(async (tx) => {
+				if ((await tx.doc(LiveDoc, root.id)).run === undefined) throw new Error("Not working");
+				return root.admit(tx, { type: "input", content: "never start", whenBusy: "steer" }, context);
+			}, context),
+		).rejects.toThrow("Not working");
+		expect((await harness.inspect(context)).tasks).toEqual([]);
+		await harness.close(context);
+	});
+
 	it("appends an idle write and settles it done without a turn", async () => {
 		const { harness, root } = await openChat(new ControlledStorage(), chatSetup());
 		const submission = await root.submit({ type: "write", entry: { kind: "note", data: { text: "x" } } }, context);

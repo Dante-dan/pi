@@ -50,6 +50,29 @@ const submission = {
 export const DURABLE_TELEMETRY_SCHEMA = defineTelemetrySchema({
 	version: 1,
 	spans: {
+		"pi.durable.admit": {
+			description:
+				"Provisional admission inside a host transaction, not its commit. Inputs start root traces linked to their callers and running steer targets; writes are children.",
+			parents: { kind: "any" },
+			startAttributes: {
+				"submission.type": {
+					type: "string",
+					required: true,
+					values: ["input", "write"],
+					description: "Submission type.",
+				},
+				"conversation.id": { type: "number", required: true, description: "Conversation ID.", cardinality: "high" },
+			},
+			endAttributes: {
+				"submission.id": { type: "number", description: "Provisional submission ID.", cardinality: "high" },
+				result: {
+					type: "string",
+					values: ["queued", "placed", "done"],
+					description: "Provisional admission result.",
+				},
+			},
+			status: { default: "ok", errorWhen: "Admission failed; the enclosing commit may also fail later." },
+		},
 		"pi.durable.submit": {
 			description:
 				"Public submission admission and its commit. Inputs start root traces linked to their callers; writes are children. Internal admissions emit phase events only.",
