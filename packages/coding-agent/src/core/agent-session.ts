@@ -785,6 +785,18 @@ export class AgentSession {
 		return { ...context, messages: this.sessionManager.buildSessionProjection().messages };
 	}
 
+	/** Keep duplicate persisted results out of requests without rewriting session history. */
+	private _sanitizeProjectionMessages(messages: AgentMessage[]): AgentMessage[] {
+		const seenResults = new Set<string>();
+		return messages.filter((message) => {
+			if (message.role === "assistant") seenResults.clear();
+			if (message.role !== "toolResult") return true;
+			if (seenResults.has(message.toolCallId)) return false;
+			seenResults.add(message.toolCallId);
+			return true;
+		});
+	}
+
 	private _installAgentRequestProjection(): void {
 		const previousPrepareRequest = this.agent.prepareRequest;
 		this.agent.prepareRequest = async (request, signal) => {
@@ -794,7 +806,7 @@ export class AgentSession {
 				const projection = this.sessionManager.buildSessionProjection();
 				const canonicalContext = {
 					...request.context,
-					messages: projection.messages,
+					messages: this._sanitizeProjectionMessages(projection.messages),
 					// Messages declare the provider-visible loadout; context.tools keeps executable implementations.
 					tools: this.agent.state.tools.slice(),
 				};
