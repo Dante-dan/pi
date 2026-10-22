@@ -65,10 +65,32 @@ describe("ModelRuntime classifiers", () => {
 		return requests[0]!;
 	}
 
-	it("lists Jev separately and classifies with runtime-resolved auth", async () => {
-		const runtime = await createRuntime();
+	// Regression for #11223: built-in classifier overrides must reach metadata and requests.
+	it("lists Jev separately and classifies with runtime-resolved auth and model overrides", async () => {
+		const runtime = await createRuntime({
+			providers: {
+				typesafe: {
+					modelOverrides: {
+						"jev-latest": {
+							name: "Custom Jev",
+							input: ["text"],
+							contextWindow: 8192,
+							cost: { input: 1 },
+							headers: { "X-Classifier-Override": "configured" },
+							maxTokens: 123,
+						},
+					},
+				},
+			},
+		});
 		const jev = runtime.getModelOfType("classifier", "typesafe", "jev-latest")!;
 		expect(jev.type).toBe("classifier");
+		expect(jev.name).toBe("Custom Jev");
+		expect(jev.input).toEqual(["text"]);
+		expect(jev.contextWindow).toBe(8192);
+		expect(jev.cost.input).toBe(1);
+		expect(jev.cost.output).toBeTypeOf("number");
+		expect(jev).not.toHaveProperty("maxTokens");
 		expect(runtime.getModel("typesafe", "jev-latest")).toBeUndefined();
 
 		const unconfigured = await runtime.classify(jev, context);
@@ -79,6 +101,7 @@ describe("ModelRuntime classifiers", () => {
 		expect(await runtime.getAvailableOfType("classifier", "typesafe")).toEqual([jev]);
 		const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
 			expect(new Headers(init?.headers).get("authorization")).toBe("Bearer sk-typesafe");
+			expect(new Headers(init?.headers).get("X-Classifier-Override")).toBe("configured");
 			return Response.json({ answers: { approved: { type: "noul", noul: 0.8 } } });
 		});
 		const result = await runtime.classify(jev, context, { fetch });

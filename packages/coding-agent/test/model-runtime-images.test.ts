@@ -283,6 +283,7 @@ describe("ModelRuntime image generation", () => {
 		expect(chatDispatches).toBe(0);
 	});
 
+	// Regression for #11223: shared IDs receive shared overrides across model types.
 	it("keeps image generation on a built-in provider composed with models.json overrides", async () => {
 		const runtime = await createRuntime({
 			providers: {
@@ -290,7 +291,7 @@ describe("ModelRuntime image generation", () => {
 					headers: { "X-Title": "pi" },
 					modelOverrides: {
 						"openrouter/auto": { name: "Auto (renamed)" },
-						"google/gemini-3-pro-image": { headers: { "X-Chat-Only": "yes" } },
+						"google/gemini-3-pro-image": { name: "Custom image model", headers: { "X-Model": "yes" } },
 					},
 				},
 			},
@@ -304,11 +305,13 @@ describe("ModelRuntime image generation", () => {
 		await runtime.setRuntimeApiKey("openrouter", "sk-or");
 		const chat = runtime.getModel("openrouter", "google/gemini-3-pro-image")!;
 		const image = runtime.getModelOfType("image", "openrouter", "google/gemini-3-pro-image")!;
+		expect(image.name).toBe("Custom image model");
+		expect(image).not.toHaveProperty("contextWindow");
 		const chatAuth = await runtime.getAuth(chat);
 		const imageAuth = await runtime.getAuth(image);
 		expect(imageAuth?.auth.apiKey).toBe("sk-or");
-		expect(chatAuth?.auth.headers).toMatchObject({ "X-Title": "pi", "X-Chat-Only": "yes" });
-		expect(imageAuth?.auth.headers).toEqual({ "X-Title": "pi" });
+		expect(chatAuth?.auth.headers).toMatchObject({ "X-Title": "pi", "X-Model": "yes" });
+		expect(imageAuth?.auth.headers).toEqual({ "X-Title": "pi", "X-Model": "yes" });
 	});
 
 	it("does not add image generation or classification to composed chat-only providers", async () => {

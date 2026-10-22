@@ -176,15 +176,10 @@ function mergeSamplingParamsByThinkingLevel(
 	return merged;
 }
 
-function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride): Model<Api> {
-	return {
-		...model,
+function applyModelOverride(model: AnyModel, override: ModelsJsonModelOverride): AnyModel {
+	const shared = {
 		name: override.name ?? model.name,
-		reasoning: override.reasoning ?? model.reasoning,
-		thinkingLevelMap: override.thinkingLevelMap
-			? { ...model.thinkingLevelMap, ...override.thinkingLevelMap }
-			: model.thinkingLevelMap,
-		input: (override.input as ("text" | "image")[] | undefined) ?? model.input,
+		input: override.input ?? model.input,
 		inputLimits: mergeInputLimits(model.inputLimits, override.inputLimits),
 		cost: override.cost
 			? {
@@ -195,6 +190,23 @@ function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride
 					tiers: override.cost.tiers ?? model.cost.tiers,
 				}
 			: model.cost,
+	};
+	if (isModelType(model, "image")) return { ...model, ...shared };
+	if (isModelType(model, "classifier")) {
+		return {
+			...model,
+			...shared,
+			contextWindow: override.contextWindow ?? model.contextWindow,
+			compat: override.compat ? { ...model.compat, ...override.compat } : model.compat,
+		};
+	}
+	return {
+		...model,
+		...shared,
+		reasoning: override.reasoning ?? model.reasoning,
+		thinkingLevelMap: override.thinkingLevelMap
+			? { ...model.thinkingLevelMap, ...override.thinkingLevelMap }
+			: model.thinkingLevelMap,
 		promptCache: override.promptCache ? { ...model.promptCache, ...override.promptCache } : model.promptCache,
 		contextWindow: override.contextWindow ?? model.contextWindow,
 		maxTokens: override.maxTokens ?? model.maxTokens,
@@ -515,8 +527,8 @@ function rawModelHeaders(
 	config: ModelsJsonProvider | undefined,
 	extension: ProviderConfigInput | undefined,
 ): Record<string, string> | undefined {
-	// models.json definitions and overrides are chat-only. Extension definitions
-	// are matched by operation and id so colliding models cannot share headers.
+	// models.json definitions are chat-only; overrides apply to every model type.
+	// Extension definitions are matched by operation and id.
 	const chatDefinition = isModelType(model, "chat")
 		? config?.models?.find((entry) => entry.id === model.id)
 		: undefined;
@@ -524,7 +536,7 @@ function rawModelHeaders(
 		(entry) => (entry.type ?? "chat") === (model.type ?? "chat") && entry.id === model.id,
 	);
 	const headers = {
-		...(isModelType(model, "chat") ? config?.modelOverrides?.[model.id]?.headers : undefined),
+		...config?.modelOverrides?.[model.id]?.headers,
 		...chatDefinition?.headers,
 		...extensionModel?.headers,
 	};
@@ -575,7 +587,7 @@ export function composeModelProvider(
 		}
 		return models.map((model) => {
 			const override = config?.modelOverrides?.[model.id];
-			return override && isModelType(model, "chat") ? applyModelOverride(model, override) : model;
+			return override ? applyModelOverride(model, override) : model;
 		});
 	};
 	// Validate eagerly so registration/reload reports structural errors immediately.
