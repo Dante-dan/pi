@@ -937,6 +937,14 @@ export class SettingsManager {
 		this.save();
 	}
 
+	/** Read from global settings only because extending warming costs money. */
+	getCacheWarmingIdleMaxAgeMs(): number {
+		const value = this.globalSettings.cacheWarmingIdleMaxAgeMs;
+		return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+			? value
+			: SETTINGS_DEFAULTS.cacheWarmingIdleMaxAgeMs;
+	}
+
 	getProviderRetrySettings(): { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs: number } {
 		return {
 			timeoutMs: this.settings.retry?.provider?.timeoutMs,

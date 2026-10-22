@@ -27,7 +27,7 @@ import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/ex
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import type { ExtensionFactory } from "../src/core/extensions/types.ts";
 import { type SessionEntry, SessionManager, type UsageEntry } from "../src/core/session-manager.ts";
-import type { CacheWarmingMode } from "../src/core/settings-manager.ts";
+import { type CacheWarmingMode, InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
 import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 
 const adaptiveModel: Model<Api> = {
@@ -86,6 +86,7 @@ function fakeRuntime(
 		result?: (model: Model<Api>) => Promise<AssistantMessage>;
 		decide?: (event: CacheWarmingDecisionEvent) => CacheWarmingAction | Promise<CacheWarmingAction>;
 		mode?: CacheWarmingMode;
+		idleMaxAgeMs?: number;
 		branch?: SessionEntry[];
 	} = {},
 ) {
@@ -110,6 +111,7 @@ function fakeRuntime(
 			events.push(event);
 			return options.decide?.(event) ?? event.action;
 		},
+		options.idleMaxAgeMs === undefined ? undefined : () => options.idleMaxAgeMs!,
 	);
 	warmer.onWarmed = (entry) => warmedEntries.push(entry);
 	return { warmer, calls, events, warmedEntries, appendUsage, state };
@@ -124,6 +126,41 @@ const current = () => true;
 afterEach(() => vi.useRealTimers());
 
 describe("cache warming", () => {
+	// #11127: a longer idle window is opt-in and must not be enabled by project settings.
+	it("reads a positive finite global idle horizon with the existing default", () => {
+		const storage = new InMemorySettingsStorage();
+		storage.withLock("project", () => JSON.stringify({ cacheWarmingIdleMaxAgeMs: 7_200_000 }));
+		expect(SettingsManager.fromStorage(storage).getCacheWarmingIdleMaxAgeMs()).toBe(1_800_000);
+		storage.withLock("global", () => JSON.stringify({ cacheWarmingIdleMaxAgeMs: 3_600_000 }));
+		expect(SettingsManager.fromStorage(storage).getCacheWarmingIdleMaxAgeMs()).toBe(3_600_000);
+		for (const value of [0, -1, 0.5, "7200000", null, 1e100]) {
+			storage.withLock("global", () => JSON.stringify({ cacheWarmingIdleMaxAgeMs: value }));
+			expect(SettingsManager.fromStorage(storage).getCacheWarmingIdleMaxAgeMs()).toBe(1_800_000);
+		}
+	});
+
+	// #11127: a 30-minute TTL refreshes at 27 and 54 minutes only with a longer horizon.
+	it.each([undefined, 60, 120])(
+		"honors the idle horizon of %s minutes without resetting its clock",
+		async (minutes) => {
+			vi.useFakeTimers();
+			vi.setSystemTime(0);
+			const { warmer, calls } = fakeRuntime({
+				idleMaxAgeMs: minutes === undefined ? undefined : minutes * 60_000,
+				branch: branchWithPrompt(400_000),
+			});
+			warmer.start(request({ ...adaptiveModel, promptCache: { short: 1800 } }), current);
+			await vi.advanceTimersByTimeAsync(10 * 60_000);
+			warmer.onAgentSettled();
+			await vi.advanceTimersByTimeAsync(((minutes ?? 30) - 10) * 60_000);
+			expect(calls).toHaveLength(Math.floor((minutes ?? 30) / 27));
+			expect(warmer.status).toMatchObject({
+				state: "inactive",
+				reason: `${minutes ?? 30}-minute idle safety limit reached`,
+			});
+		},
+	);
+
 	it("derives eligibility and timing from retention and provider behavior", () => {
 		expect([
 			getPromptCacheTtlMs(adaptiveModel, undefined),

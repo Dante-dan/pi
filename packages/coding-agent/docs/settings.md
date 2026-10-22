@@ -19,8 +19,11 @@ Add `"$schema": "https://pi.dev/schemas/settings.schema.json"` to `settings.json
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in the transcript. |
 | `showCacheMissNotices` | boolean | `false` | Show notices for significant cache misses, successful cache warming, compaction usage, and provider recovery. |
 | `cacheWarming` | `"off" \| "streaming" \| "idle"` | `"streaming"` | Keep eligible provider prompt caches warm during active runs or, with `"idle"`, between runs. Global setting only. |
+| `cacheWarmingIdleMaxAgeMs` | positive safe integer | `1800000` | Maximum age of idle warming, in milliseconds from the last real request. Global setting only. Invalid values fall back to 30 minutes. |
 
 Cache warming runs only when the model declares a cache lifetime and Pi estimates at least $0.05 in avoided cache-miss cost. Refresh usage counts toward session totals but does not enter model context. `/session` shows the next decision; extensions can override it with `cache_warming_decision`. See [Prompt Cache Lifetimes](models.md#prompt-cache-lifetimes).
+
+For a two-hour idle window, set `"cacheWarming": "idle"` and `"cacheWarmingIdleMaxAgeMs": 7200000` in agent-directory settings. Refreshes do not reset this window. The one-hour streaming limit, TTL-based timing, cost checks, and late-refresh protection still apply.
 
 See [Choose a Model](models.md) for model selection and thinking controls.
 

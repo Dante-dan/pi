@@ -670,6 +670,13 @@
       "description": "Cache-warming profile. \"idle\" also warms between agent runs. Global only because each refresh costs money.",
       "default": "streaming"
     },
+    "cacheWarmingIdleMaxAgeMs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "Maximum idle cache-warming age in milliseconds from the last real request. Global only because each refresh costs money.",
+      "default": 1800000
+    },
     "websocketConnectTimeoutMs": {
       "anyOf": [
         {

@@ -10,12 +10,11 @@ import {
 import { getProviderEnvValue } from "@earendil-works/pi-ai/utils/provider-env";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { SessionEntry, SessionManager, UsageEntry } from "./session-manager.ts";
+import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import type { CacheWarmingMode } from "./settings-manager.ts";
 
 /** Streaming warming never continues past this long after the real request that started it. */
 const MAX_WARMING_AGE_MS = 60 * 60_000;
-/** Idle warming uses a shorter horizon because continuation estimates become less reliable with age. */
-const MAX_IDLE_WARMING_AGE_MS = 30 * 60_000;
 /** A refresh is sent only when it is expected to save at least this many dollars. */
 const CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS = 0.05;
 /**
@@ -165,6 +164,7 @@ export class CacheWarmer {
 	private readonly models: Pick<ModelRuntime, "streamSimple">;
 	private readonly sessionManager: Pick<SessionManager, "appendUsage" | "getBranch">;
 	private readonly getMode: () => CacheWarmingMode;
+	private readonly getIdleMaxAgeMs: () => number;
 	/** Lets extensions override `event.action`; failures fall back to pi's decision. */
 	private readonly decide: (event: CacheWarmingDecisionEvent) => Promise<CacheWarmingAction>;
 	/** Called with the persisted usage entry after each successful refresh. */
@@ -175,10 +175,12 @@ export class CacheWarmer {
 		sessionManager: Pick<SessionManager, "appendUsage" | "getBranch">,
 		getMode: () => CacheWarmingMode,
 		decide: (event: CacheWarmingDecisionEvent) => Promise<CacheWarmingAction> = async (event) => event.action,
+		getIdleMaxAgeMs: () => number = () => SETTINGS_DEFAULTS.cacheWarmingIdleMaxAgeMs,
 	) {
 		this.models = models;
 		this.sessionManager = sessionManager;
 		this.getMode = getMode;
+		this.getIdleMaxAgeMs = getIdleMaxAgeMs;
 		this.decide = decide;
 		this.inactive = { state: "inactive", reason: "waiting for first request" };
 	}
@@ -250,9 +252,10 @@ export class CacheWarmer {
 			return;
 		}
 		run.phase = "idle";
-		const deadline = run.startedAt + MAX_IDLE_WARMING_AGE_MS;
+		const idleMaxAgeMs = this.getIdleMaxAgeMs();
+		const deadline = run.startedAt + idleMaxAgeMs;
 		if (run.nextWarmAt > deadline || Date.now() >= deadline) {
-			this.stop("30-minute idle safety limit reached");
+			this.stop(`${idleMaxAgeMs / 60_000}-minute idle safety limit reached`);
 		}
 	}
 
@@ -288,9 +291,14 @@ export class CacheWarmer {
 		// the planned pre-expiry margin for that delay and request dispatch; a
 		// late refresh is likely a full-price cache write, not a cache warm.
 		run.refreshDeadlineAt = run.nextWarmAt + Math.floor((run.ttlMs - run.delayMs) / 2);
-		const deadline = run.startedAt + (run.phase === "idle" ? MAX_IDLE_WARMING_AGE_MS : MAX_WARMING_AGE_MS);
+		const idleMaxAgeMs = this.getIdleMaxAgeMs();
+		const deadline = run.startedAt + (run.phase === "idle" ? idleMaxAgeMs : MAX_WARMING_AGE_MS);
 		if (run.nextWarmAt > deadline || Date.now() >= deadline) {
-			this.stop(run.phase === "idle" ? "30-minute idle safety limit reached" : "one-hour safety limit reached");
+			this.stop(
+				run.phase === "idle"
+					? `${idleMaxAgeMs / 60_000}-minute idle safety limit reached`
+					: "one-hour safety limit reached",
+			);
 			return;
 		}
 		run.timer = setTimeout(() => void this.refresh(run), Math.max(0, run.nextWarmAt - Date.now()));
