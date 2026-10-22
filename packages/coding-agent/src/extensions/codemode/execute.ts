@@ -793,6 +793,8 @@ function createModelGlobals(
 			id: `${toolCallId}/${name}/${++callCount}`,
 			name,
 			args: `${resolved.provider}/${resolved.id}`,
+			provider: resolved.provider,
+			model: resolved.id,
 			status: "running",
 		};
 		calls.push(record);
@@ -803,6 +805,7 @@ function createModelGlobals(
 		record.status = result.stopReason === "stop" ? "ok" : result.stopReason === "aborted" ? "cancelled" : "error";
 		if (result.errorMessage) record.error = truncateText(result.errorMessage, ERROR_PREVIEW_CHARS);
 		if (result.usage) {
+			record.usage = result.usage;
 			record.cost = result.usage.cost.total;
 			addUsage(result.usage);
 		}

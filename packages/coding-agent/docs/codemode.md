@@ -94,6 +94,8 @@ declare const models: {
 
 Model IDs differ between providers, for example `typesafe/jev-latest` and `openrouter/typesafe/jev-1.13`. Use `models.getAvailableOfType(type)` to find the IDs that work with the current credentials.
 
+The persisted tool result's `details.calls` contains a row for each classifier or image call, with its `id`, `provider`, `model`, and `usage` when reported. The ID is scoped to the parent tool call (`<toolCallId>/<method>/<n>`). Exporters can use these rows for per-model totals; their usage is already included in the parent tool result's aggregate `usage`, so do not add both. Older rows may lack these fields, and missing usage does not mean zero tokens. These rows describe calls to the model runtime, not individual provider retries.
+
 ### Classify
 
 ```ts

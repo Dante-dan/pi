@@ -23,6 +23,7 @@
 
 import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { Usage } from "@earendil-works/pi-ai";
 import type { CodemodeJsonSchema, CodemodeTool } from "@earendil-works/pi-codemode";
 import { renderToolOutputType, renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codemode/declarations";
 import { CODEMODE_SOURCE_GRAMMAR } from "@earendil-works/pi-codemode/source";
@@ -95,6 +96,12 @@ export interface CodemodeNestedCall {
 	durationMs?: number;
 	/** Error text, truncated for display. */
 	error?: string;
+	/** Provider of a `models.*` call. */
+	provider?: string;
+	/** Model id of a `models.*` call. */
+	model?: string;
+	/** This call's usage, already included in the parent tool result's usage. */
+	usage?: Usage;
 	/** Cost in USD of a `models.*` call that reported usage. */
 	cost?: number;
 }
