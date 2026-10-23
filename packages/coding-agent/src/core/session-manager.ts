@@ -162,6 +162,8 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 	content: string | (TextContent | ImageContent)[];
 	details?: T;
 	display: boolean;
+	/** Explicit opt-in to create the session file without a user or assistant message. */
+	persist?: boolean;
 }
 
 /** Content that an append-only context edit may replace without changing message metadata. */
@@ -452,7 +454,14 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 	}
 	if (entry.type === "custom_message") {
 		return [
-			createCustomMessage(entry.customType, entry.content ?? [], entry.display, entry.details, entry.timestamp),
+			createCustomMessage(
+				entry.customType,
+				entry.content ?? [],
+				entry.display,
+				entry.details,
+				entry.timestamp,
+				entry.persist,
+			),
 		];
 	}
 	if (entry.type === "branch_summary" && entry.summary) {
@@ -1158,14 +1167,17 @@ export class SessionManager {
 	}
 
 	/**
-	 * A new session file is created only once the session contains a user or assistant message.
+	 * A new session file is created once the session contains a user or assistant message,
+	 * or a custom message explicitly requesting persistence.
 	 * Setup entries alone (model, thinking level, system prompt) stay in memory so opening and
 	 * closing pi without chatting leaves no file behind. Starting at the user message (not the
 	 * first assistant reply) keeps the prompt on disk if the first turn never completes (#10000).
 	 */
 	private _hasConversation(): boolean {
 		return this.fileEntries.some(
-			(e) => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"),
+			(e) =>
+				(e.type === "message" && (e.message.role === "user" || e.message.role === "assistant")) ||
+				(e.type === "custom_message" && e.persist === true),
 		);
 	}
 
@@ -1334,6 +1346,7 @@ export class SessionManager {
 	 * @param content Message content (string or TextContent/ImageContent array)
 	 * @param display Whether to show in TUI (true = styled display, false = hidden)
 	 * @param details Optional extension-specific metadata (not sent to LLM)
+	 * @param persist Create the session file even without a user or assistant message
 	 * @returns Entry id
 	 */
 	appendCustomMessageEntry<T = unknown>(
@@ -1341,8 +1354,10 @@ export class SessionManager {
 		content: string | (TextContent | ImageContent)[],
 		display: boolean,
 		details?: T,
+		persist?: boolean,
 	): string {
 		const entry: CustomMessageEntry<T> = {
+			...(persist === true ? { persist: true } : {}),
 			type: "custom_message",
 			customType,
 			content,

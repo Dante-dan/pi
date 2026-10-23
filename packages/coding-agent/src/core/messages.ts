@@ -49,6 +49,8 @@ export interface CustomMessage<T = unknown> {
 	content: string | (TextContent | ImageContent)[];
 	display: boolean;
 	details?: T;
+	/** Allow this message to create the session file before a user or assistant message. */
+	persist?: boolean;
 	timestamp: number;
 }
 
@@ -126,6 +128,7 @@ export function createCustomMessage(
 	display: boolean,
 	details: unknown | undefined,
 	timestamp: string,
+	persist?: boolean,
 ): CustomMessage {
 	return {
 		role: "custom",
@@ -134,6 +137,7 @@ export function createCustomMessage(
 		display,
 		details,
 		timestamp: new Date(timestamp).getTime(),
+		...(persist === true ? { persist: true } : {}),
 	};
 }
 

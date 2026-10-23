@@ -1154,6 +1154,7 @@ export class AgentSession {
 					event.message.content,
 					event.message.display,
 					event.message.details,
+					event.message.persist,
 				);
 			} else if (
 				event.message.role === "system" ||
@@ -2351,12 +2352,13 @@ export class AgentSession {
 	 * - Not streaming + no trigger: appends to state/session, no turn
 	 *
 	 * @param message Custom message with customType, content, display, details
+	 * @param options.persist Create the session file when this message is delivered, even before chatting
 	 * @param options.triggerTurn If true and not streaming, triggers a new LLM turn
 	 * @param options.deliverAs Delivery mode: "steer", "followUp", or "nextTurn"
 	 */
 	async sendCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn"; persist?: boolean },
 	): Promise<void> {
 		const appMessage = {
 			role: "custom" as const,
@@ -2365,6 +2367,7 @@ export class AgentSession {
 			content: message.content ?? [],
 			display: message.display,
 			details: message.details,
+			...(options?.persist === true ? { persist: true } : {}),
 			timestamp: Date.now(),
 		} satisfies CustomMessage<T>;
 		if (options?.deliverAs === "nextTurn") {
@@ -2398,6 +2401,7 @@ export class AgentSession {
 			appMessage.content,
 			appMessage.display,
 			appMessage.details,
+			appMessage.persist,
 		);
 		this._refreshFinalizedContext();
 		this._emit({ type: "message_start", message: appMessage });
