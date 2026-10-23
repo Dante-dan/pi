@@ -300,13 +300,16 @@ class HarnessImpl<Tool extends ToolRegistration> extends SessionImpl implements 
 
 	/** Reconcile surviving `running` tasks to `pending`; part of open. */
 	async openTasks(context: Context): Promise<void> {
+		if (this.#options.readOnly !== true) {
+			// Recover queued input before the scheduler starts its asynchronous recovery pass.
+			// That pass may hold the mutation line or fail the Session after open returns.
+			const queued = await this.readOnLine(() =>
+				scanAll((cursor) => this.storage.scanSubmissions({ status: "queued" }, SCAN_PAGE_SIZE, cursor, context)),
+			);
+			for (const id of new Set(queued.map((submission) => submission.conversationId)))
+				await this.#drain(id, context);
+		}
 		await this.#tasks.open(context);
-		if (this.#options.readOnly === true) return;
-		// Recover the gap between a blocker settling and its queued-input drain starting.
-		const queued = await this.readOnLine(() =>
-			scanAll((cursor) => this.storage.scanSubmissions({ status: "queued" }, SCAN_PAGE_SIZE, cursor, context)),
-		);
-		for (const id of new Set(queued.map((submission) => submission.conversationId))) await this.#drain(id, context);
 	}
 
 	async #drain(id: ConversationId, context: Context): Promise<void> {
