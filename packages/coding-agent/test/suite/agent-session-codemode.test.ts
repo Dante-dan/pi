@@ -203,6 +203,70 @@ describe("AgentSession codemode tool", () => {
 		expect(resultText(codemodeResult(harness))).toContain("- Use read to examine files instead of cat or sed.");
 	});
 
+	// #11350: long host calls hold both workers; timeout diagnostics identify the sessions and tools.
+	it("identifies long-running worker holders without exposing arguments", async () => {
+		const release = Promise.withResolvers<void>();
+		const started = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+		const holders = await Promise.all(
+			started.map((ready) =>
+				setup([
+					(pi) =>
+						pi.registerTool({
+							name: "slow",
+							label: "Slow",
+							description: "Hold a worker on a host call",
+							parameters: Type.Object({ secret: Type.String() }),
+							execute: async () => {
+								ready.resolve();
+								await release.promise;
+								return { content: [{ type: "text", text: "done" }], details: {} };
+							},
+						}),
+				]),
+			),
+		);
+		const waiting = await setup();
+		for (const holder of holders) {
+			holder.setResponses([
+				fauxAssistantMessage(
+					[fauxToolCall("codemode", { code: 'await tools.slow({ secret: "private-argument" })' })],
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("done"),
+			]);
+		}
+		const pending = holders.map((holder) => holder.session.prompt("hold"));
+		try {
+			await Promise.all(started.map((ready) => ready.promise));
+			waiting.setResponses([
+				fauxAssistantMessage([fauxToolCall("codemode", { code: '// @options: {"timeout_ms": 30}\nreturn 1' })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("done"),
+			]);
+			await waiting.session.prompt("wait");
+			const result = codemodeResult(waiting);
+			expect(result.isError).toBe(true);
+			const text = resultText(result);
+			for (const holder of holders) expect(text).toContain(`session "${holder.sessionManager.getSessionId()}"`);
+			expect(text.match(/awaiting tools: slow/g)).toHaveLength(2);
+			expect(text).toMatch(/held \d+\.\ds/);
+			expect(text).toContain("PI_CODEMODE_MAX_WORKERS");
+			expect(text).not.toContain("private-argument");
+			expect(text).toContain("The script did not start.");
+		} finally {
+			release.resolve();
+			await Promise.all(pending);
+		}
+		// Actual worker exits remove the old holders and allow another session to run.
+		waiting.setResponses([
+			fauxAssistantMessage([fauxToolCall("codemode", { code: 'return "admitted"' })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		await waiting.session.prompt("retry");
+		expect(resultText(codemodeResult(waiting))).toBe("admitted");
+	});
+
 	it("runs nested calls in parallel and returns only the script result", async () => {
 		const harness = await setup();
 		harness.setResponses([

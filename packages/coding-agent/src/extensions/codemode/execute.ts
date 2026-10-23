@@ -67,15 +67,23 @@ function maxCodemodeWorkers(): number {
  * held by a script that waits on another script, for example an in-process subagent that uses codemode.
  */
 const CODEMODE_WORKER_WAIT_MS = 60_000;
-let activeCodemodeWorkers = 0;
-/** Scripts waiting for a worker, in arrival order. */
-const codemodeWorkerWaiters: (() => void)[] = [];
+interface CodemodeWorkerHolder {
+	toolCallId: string;
+	sessionId: string | undefined;
+	startedAt: number;
+	calls: readonly CodemodeNestedCall[];
+	settled: boolean;
+}
+const activeCodemodeWorkers = new Set<CodemodeWorkerHolder>();
+/** Scripts waiting for a worker, in arrival order within each admission priority. */
+const codemodeWorkerWaiters: { grant: () => void; holder: CodemodeWorkerHolder; bypassed: boolean }[] = [];
 
 /**
- * Reserve one worker slot, waiting in arrival order while all are taken. Resolves with why it could
+ * Reserve one worker slot, preferring sessions without a holder while all are taken. Resolves with why it could
  * not reserve one: the signal aborted, or `timeoutMs` passed.
  */
 function reserveCodemodeWorker(
+	holder: CodemodeWorkerHolder,
 	signal: AbortSignal | undefined,
 	timeoutMs: number,
 ): Promise<"reserved" | "aborted" | "timeout"> {
@@ -84,30 +92,55 @@ function reserveCodemodeWorker(
 		const settle = (outcome: "reserved" | "aborted" | "timeout") => {
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", onAbort);
-			const index = codemodeWorkerWaiters.indexOf(grant);
+			const index = codemodeWorkerWaiters.findIndex((waiter) => waiter.grant === grant);
 			if (index >= 0) codemodeWorkerWaiters.splice(index, 1);
 			resolve(outcome);
 		};
 		const grant = () => settle("reserved");
 		const onAbort = () => settle("aborted");
 		const timer = setTimeout(() => settle("timeout"), timeoutMs);
-		codemodeWorkerWaiters.push(grant);
+		codemodeWorkerWaiters.push({ grant, holder, bypassed: false });
 		signal?.addEventListener("abort", onAbort, { once: true });
 		admitCodemodeWorkers();
 	});
 }
 
-/** Give free slots to waiting scripts in arrival order. */
+/** Prefer a session without a worker; preserve arrival order among equally eligible scripts. */
 function admitCodemodeWorkers(): void {
-	while (codemodeWorkerWaiters.length > 0 && activeCodemodeWorkers < maxCodemodeWorkers()) {
-		activeCodemodeWorkers++;
-		codemodeWorkerWaiters.shift()?.();
+	while (codemodeWorkerWaiters.length > 0 && activeCodemodeWorkers.size < maxCodemodeWorkers()) {
+		const withoutWorker = codemodeWorkerWaiters.findIndex(
+			(waiter) => ![...activeCodemodeWorkers].some((holder) => holder.sessionId === waiter.holder.sessionId),
+		);
+		// A stream of new sessions must not starve the oldest queued call either.
+		const index = codemodeWorkerWaiters[0].bypassed || withoutWorker < 0 ? 0 : withoutWorker;
+		if (index > 0) codemodeWorkerWaiters[0].bypassed = true;
+		const [waiter] = codemodeWorkerWaiters.splice(index, 1);
+		waiter.holder.startedAt = performance.now();
+		activeCodemodeWorkers.add(waiter.holder);
+		waiter.grant();
 	}
 }
 
-function releaseCodemodeWorker(): void {
-	activeCodemodeWorkers--;
+function releaseCodemodeWorker(holder: CodemodeWorkerHolder): void {
+	activeCodemodeWorkers.delete(holder);
 	admitCodemodeWorkers();
+}
+/** Describe ownership without exposing script source, tool arguments, or session file paths. */
+function describeCodemodeWorkers(): string {
+	const now = performance.now();
+	const holders = [...activeCodemodeWorkers].slice(0, 8).map((holder) => {
+		const age = ((now - holder.startedAt) / 1000).toFixed(1);
+		const pending = [...new Set(holder.calls.filter((call) => call.status === "running").map((call) => call.name))];
+		const state = holder.settled
+			? "script settled; worker still exiting"
+			: pending.length > 0
+				? `awaiting tools: ${pending.slice(0, 8).join(", ")}${pending.length > 8 ? ", ..." : ""}`
+				: "running script";
+		return `- ${JSON.stringify(holder.toolCallId)} (session ${holder.sessionId === undefined ? "unavailable" : JSON.stringify(holder.sessionId)}), held ${age}s: ${state}`;
+	});
+	if (activeCodemodeWorkers.size > holders.length)
+		holders.push(`- ${activeCodemodeWorkers.size - holders.length} more holders`);
+	return `Worker holders:\n${holders.join("\n")}\nWait for these scripts to finish or cancel them. In-process SDK hosts can set PI_CODEMODE_MAX_WORKERS to a higher positive integer if resources allow.`;
 }
 const MODEL_TYPES: ReadonlySet<string> = new Set<ModelType>(["chat", "image", "classifier"]);
 
@@ -554,17 +587,25 @@ export async function executeCodemode(
 	// The wait for a worker counts toward the script's deadline.
 	const deadline = sourceOptions.timeoutMs ?? Number.POSITIVE_INFINITY;
 	const waitStartedAt = performance.now();
-	const admission = await reserveCodemodeWorker(signal, Math.min(deadline, CODEMODE_WORKER_WAIT_MS));
+	const holder: CodemodeWorkerHolder = {
+		toolCallId,
+		sessionId: ctx?.sessionManager.getSessionId(),
+		startedAt: waitStartedAt,
+		calls,
+		settled: false,
+	};
+	const admission = await reserveCodemodeWorker(holder, signal, Math.min(deadline, CODEMODE_WORKER_WAIT_MS));
 	const waitedMs = performance.now() - waitStartedAt;
 	if (admission !== "reserved") {
 		const waited = ((performance.now() - startedAt) / 1000).toFixed(1);
 		const reason = signal?.reason;
-		const error =
+		let error =
 			admission === "aborted"
 				? `Script aborted: ${reason instanceof Error ? reason.message : "Execution aborted"}`
 				: deadline <= CODEMODE_WORKER_WAIT_MS
 					? `Script timed out: Execution timed out after ${deadline} ms while waiting for a free codemode worker`
 					: `No codemode worker became free within ${CODEMODE_WORKER_WAIT_MS / 1000} seconds. All ${maxCodemodeWorkers()} workers, shared by every session in this process, are held by other scripts. Retry after they finish.`;
+		if (admission === "timeout") error += `\n\n${describeCodemodeWorkers()}`;
 		return {
 			content: [
 				{ type: "text", text: `Script failed\nWall time ${waited} seconds\nOutput:\n` },
@@ -597,16 +638,17 @@ export async function executeCodemode(
 				if (!reserved) throw new Error("The script already settled");
 				// From here the sandbox releases the slot when the worker actually exits.
 				reserved = false;
-				return releaseCodemodeWorker;
+				return () => releaseCodemodeWorker(holder);
 			},
 		});
 		const store = ctx ? readCodemodeStore(ctx.sessionManager.getBranch()) : {};
 		result = await sandbox.execute(code, { signal, store });
 	} finally {
+		holder.settled = true;
 		await sandbox?.close();
 		if (reserved) {
 			reserved = false;
-			releaseCodemodeWorker();
+			releaseCodemodeWorker(holder);
 		}
 	}
 	// Calls still marked running were cut off by the script ending, a timeout, or an abort.

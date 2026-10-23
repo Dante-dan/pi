@@ -1,6 +1,8 @@
 import { Worker } from "node:worker_threads";
 import * as codemode from "@earendil-works/pi-codemode";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ExtensionToolContext } from "../src/core/extensions/types.ts";
+import { SessionManager } from "../src/core/session-manager.ts";
 import { executeCodemode } from "../src/extensions/codemode/execute.ts";
 
 const terminate = Worker.prototype.terminate;
@@ -97,6 +99,16 @@ describe("codemode worker admission", () => {
 			text: expect.stringContaining("Execution timed out after 50 ms while waiting for a free codemode worker"),
 		});
 
+		// #11350: capacity errors identify workers that still occupy a slot after settlement.
+		expect(timedOut.content).toContainEqual({
+			type: "text",
+			text: expect.stringContaining('"worker-admission" (session unavailable), held '),
+		});
+		expect(timedOut.content).toContainEqual({
+			type: "text",
+			text: expect.stringContaining("script settled; worker still exiting"),
+		});
+
 		expect(waitingSettled).toBe(false);
 		expect(terminations.size).toBe(2);
 
@@ -106,6 +118,46 @@ describe("codemode worker admission", () => {
 		expect(admitted.isError).toBeUndefined();
 		expect(admitted.content).toContainEqual({ type: "text", text: "3" });
 		expect(terminations.size).toBe(2);
+	});
+
+	// #11350: a busy session cannot reclaim the next slot ahead of a session holding none.
+	it.each(["complete", "abort"] as const)("bounds bypasses when the oldest waiter will %s", async (how) => {
+		vi.stubEnv("PI_CODEMODE_MAX_WORKERS", "2");
+		// These scripts have no tools/models and only read the session identity and empty branch.
+		const context = () =>
+			({ tools: [], sessionManager: SessionManager.inMemory() }) as unknown as ExtensionToolContext;
+		const busy = context();
+		const other = context();
+		const runIn = (ctx: ExtensionToolContext, id: string, signal?: AbortSignal) =>
+			executeCodemode(id, { code: "return 1" }, signal, undefined, ctx);
+		await runIn(busy, "busy-first");
+		await runIn(busy, "busy-second");
+		const order: string[] = [];
+		const controller = new AbortController();
+		const queuedBusy = runIn(busy, "busy-next", controller.signal).then((result) => {
+			order.push("busy");
+			return result;
+		});
+		await sleep(20);
+		const queuedOther = runIn(other, "other").then(() => order.push("other"));
+		const queuedOtherAgain = runIn(other, "other-again").then(() => order.push("other-again"));
+		const queuedThird = runIn(context(), "third").then(() => order.push("third"));
+		await sleep(20);
+		await releaseOne();
+		await queuedOther;
+		expect(order).toEqual(["other"]);
+		expect(terminations.size).toBe(2);
+		if (how === "abort") controller.abort();
+		else await releaseOne();
+		const busyResult = await queuedBusy;
+		expect(busyResult.isError).toBe(how === "abort" ? true : undefined);
+		expect(order).toEqual(["other", "busy"]);
+		await releaseOne();
+		await queuedThird;
+		expect(order).toEqual(["other", "busy", "third"]);
+		await releaseOne();
+		await queuedOtherAgain;
+		expect(order).toEqual(["other", "busy", "third", "other-again"]);
 	});
 
 	// #10748: timed-out launches resuming after WASM loading must not start workers.
