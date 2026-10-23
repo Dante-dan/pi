@@ -31,9 +31,9 @@ afterEach(async () => {
 const run = (code: string, signal?: AbortSignal) =>
 	executeCodemode("worker-admission", { code }, signal, undefined, undefined);
 
-/** Let the first held worker actually exit. */
-async function releaseOne(): Promise<void> {
-	const [worker, resolve] = [...terminations][0];
+/** Let one held worker actually exit. */
+async function releaseOne(index = 0): Promise<void> {
+	const [worker, resolve] = [...terminations][index];
 	terminations.delete(worker);
 	resolve(await terminate.call(worker));
 }
@@ -152,7 +152,8 @@ describe("codemode worker admission", () => {
 		const busyResult = await queuedBusy;
 		expect(busyResult.isError).toBe(how === "abort" ? true : undefined);
 		expect(order).toEqual(["other", "busy"]);
-		await releaseOne();
+		// Keep other's first worker alive: its second call must lose workerless priority.
+		await releaseOne(how === "complete" ? 1 : 0);
 		await queuedThird;
 		expect(order).toEqual(["other", "busy", "third"]);
 		await releaseOne();
