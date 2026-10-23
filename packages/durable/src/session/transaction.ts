@@ -117,6 +117,8 @@ export interface TransactionHost {
 	evict(addressId: string, recordId: DocumentId): void;
 	/** Stage writes that belong to every newly created or forked conversation, in its creating transaction. */
 	conversationCreated(tx: Transaction, record: ConversationRecord): Promise<void>;
+	/** Stage Harness bookkeeping atomically with a new task. */
+	taskCreated(tx: Transaction, record: AnyTaskRecord): Promise<void>;
 }
 
 /** Committed and candidate state for one task touched by this transaction. */
@@ -439,6 +441,7 @@ export class Transaction implements Tx {
 					links: options.links,
 					...(owner === undefined ? {} : { owner: owner.id }),
 					background: options.background ?? false,
+					...(options.blocksInput === true ? { blocksInput: true } : {}),
 					abortRequested: false,
 					...(options.abandonOnRestart === true ? { abandonOnRestart: true } : {}),
 					state: { status: "pending", checkpoint },
@@ -446,6 +449,7 @@ export class Transaction implements Tx {
 				TABLE_JSON_COPY_OPTIONS,
 			) as unknown as AnyTaskRecord;
 			this.#tasksById.set(id, { write: { kind: "create", record } });
+			await this.#host.taskCreated(this, record);
 			return id;
 		});
 	}

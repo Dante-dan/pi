@@ -227,7 +227,7 @@ export async function admitSubmission(
 		return { id: (await tx.createSubmission(write)).id, status: "done" };
 	}
 	const live = await tx.doc(LiveDoc, conversationId);
-	const busy = live.run !== undefined;
+	const busy = live.run !== undefined || (live.blockingTasks?.length ?? 0) > 0;
 	if (
 		draft.type === "input" &&
 		draft.whenBusy === "steer" &&

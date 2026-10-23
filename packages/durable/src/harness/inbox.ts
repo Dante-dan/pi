@@ -2,6 +2,7 @@ import { copyJson, type Draft, type JsonRepresentation } from "@earendil-works/c
 import { defineDoc } from "../documents.ts";
 import { UserEntry } from "../entries.ts";
 import type { ConversationId, EntryDraft, EntryId, EntryRecord, JsonObject, SubmissionId, Tx } from "../types.ts";
+import { LiveDoc } from "./live.ts";
 import type { InputEntry, QueueMode, Settings, UserInput } from "./types.ts";
 
 /** A queued submission: user input for a run, with the entry it is placed as when not `pi.user`, or an entry write. */
@@ -74,6 +75,9 @@ export async function applyBoundary(
 	now: number,
 ): Promise<BoundaryResult> {
 	const { conversationId, inbox } = boundary;
+	if (((await tx.doc(LiveDoc, conversationId)).blockingTasks?.length ?? 0) > 0) {
+		return { users: [], reset: false };
+	}
 	const items = inbox.items;
 	const reset = hasQueuedReset(items);
 	const final = at === "final" || reset;

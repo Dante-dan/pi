@@ -382,6 +382,8 @@ export type TaskOptions = {
 	readonly conversationId?: ConversationId;
 	/** Conversation-owned tasks only: excluded from ordinary idle waits, conversation aborts, and cascades. */
 	readonly background?: boolean;
+	/** Keep this conversation's submissions queued until the task is terminal, independently of background ownership. */
+	readonly blocksInput?: boolean;
 	/**
 	 * Its creator awaits it only in memory and does not resume after a restart, so it is pointless once the Harness that
 	 * created it is gone. When scheduling starts in a later Harness, the task, if still live, is abort-marked with reason
@@ -660,6 +662,8 @@ type TaskRecordBase<I, R> = {
 	readonly owner?: TaskId;
 	/** Whether this conversation-owned task is excluded from ordinary idle waits, conversation aborts, and cascades. */
 	readonly background: boolean;
+	/** Keep this conversation busy for submission admission until terminal. Immutable; absent means false. */
+	readonly blocksInput?: true;
 	/** Durable abort mark checked before run-mode progress is committed. */
 	readonly abortRequested: boolean;
 	/**

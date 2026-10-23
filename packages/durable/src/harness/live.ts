@@ -80,8 +80,12 @@ export type CompactionFailure = {
 
 /** Built-in live conversation state: run control and presentation of the current generation and tool round. */
 export type LiveState = {
-	/** Run control: the task that settles the run's inputs, and those inputs; present exactly while busy. */
+	/** Run control: the task that settles the run's inputs, and those inputs; present while a generation run is live. */
 	run?: { taskId: TaskId; inputs: SubmissionId[] };
+	/** Tasks preventing submission placement, independently of a generation run and ordinary idle waits. */
+	blockingTasks?: TaskId[];
+	/** Recover a queue drain interrupted after the last input blocker settled. */
+	inputDrainPending?: true;
 	/** Presentation of the current generation attempt. */
 	generation?: {
 		attempt: number;
@@ -139,6 +143,7 @@ export function endRun(tx: Tx, live: Draft<LiveState>, taskId: TaskId, settlemen
 	if (live.run?.taskId === taskId) {
 		for (const id of live.run.inputs) tx.settleSubmission(id, settlement);
 		delete live.run;
+		if ((live.blockingTasks?.length ?? 0) === 0) delete live.inputDrainPending;
 	}
 	delete live.generation;
 	delete live.tools;

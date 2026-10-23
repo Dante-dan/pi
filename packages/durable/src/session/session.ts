@@ -202,6 +202,7 @@ export class SessionImpl implements Session {
 				if (this.#documents.get(id)?.record.id === recordId) this.#dropDocument(id);
 			},
 			conversationCreated: (tx, record) => this.conversationCreated(tx, record),
+			taskCreated: (tx, record) => this.taskCreated(tx, record),
 		};
 	}
 
@@ -479,6 +480,11 @@ export class SessionImpl implements Session {
 	 * listener. A plain Session drops them.
 	 */
 	report(_error: unknown, _info: ReportInfo = LISTENER, _context?: Context): void {}
+
+	/** Stage Harness bookkeeping with a newly created task; a plain Session stages nothing. */
+	protected taskCreated(_tx: Transaction, _record: TaskRecord<JsonValue, JsonValue, JsonValue>): Promise<void> {
+		return Promise.resolve();
+	}
 
 	/**
 	 * Runs inside every transaction that creates or forks a conversation, after the conversation record is staged. A

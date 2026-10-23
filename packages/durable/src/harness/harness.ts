@@ -17,7 +17,7 @@ import {
 import { ResetEntry } from "../entries.ts";
 import type { ExecutionEnv } from "../env/index.ts";
 import { contained, SessionImpl } from "../session/session.ts";
-import type { Transaction } from "../session/transaction.ts";
+import type { Transaction, TransactionScope } from "../session/transaction.ts";
 import { hostTimers } from "../timers.ts";
 import type {
 	ConversationId,
@@ -39,7 +39,8 @@ import { ROOT_CONVERSATION_ID } from "../types.ts";
 import { AgentDoc, configure, createAgent, resolveAgent, resolveSettings } from "./agent.ts";
 import { createCompaction } from "./compaction.ts";
 import { readContext } from "./context.ts";
-import { InboxDoc, withdrawQueuedInputs } from "./inbox.ts";
+import { startRun } from "./generation.ts";
+import { applyBoundary, InboxDoc, prepareBoundary, withdrawQueuedInputs } from "./inbox.ts";
 import { LiveDoc, settleSchedulerOutcome } from "./live.ts";
 import { ProviderDoc } from "./provider.ts";
 import { BUILTIN_TASKS } from "./registry.ts";
@@ -258,6 +259,22 @@ class HarnessImpl<Tool extends ToolRegistration> extends SessionImpl implements 
 			now,
 			create: (target, createOptions, context) => this.#create(target, createOptions, context),
 		};
+		this.observeCommits((publication, callContext) => {
+			const released = new Set<ConversationId>();
+			for (const change of publication.changes) {
+				if (
+					change.type === "task" &&
+					change.value.blocksInput === true &&
+					change.value.state.status === "terminal"
+				) {
+					released.add(change.value.conversationId);
+				}
+			}
+			for (const id of released) {
+				// A fresh commit reads the boundary before writing, after the blocker has durably settled.
+				this.#drain(id, withoutAbortSignal(callContext)).catch((error) => this.report(error));
+			}
+		});
 	}
 
 	/** Resolve a conversation's committed `pi.agent` against `snapshot`, or the current one, and the current settings. */
@@ -282,8 +299,25 @@ class HarnessImpl<Tool extends ToolRegistration> extends SessionImpl implements 
 	}
 
 	/** Reconcile surviving `running` tasks to `pending`; part of open. */
-	openTasks(context: Context): Promise<void> {
-		return this.#tasks.open(context);
+	async openTasks(context: Context): Promise<void> {
+		await this.#tasks.open(context);
+		if (this.#options.readOnly === true) return;
+		// Recover the gap between a blocker settling and its queued-input drain starting.
+		const queued = await this.readOnLine(() =>
+			scanAll((cursor) => this.storage.scanSubmissions({ status: "queued" }, SCAN_PAGE_SIZE, cursor, context)),
+		);
+		for (const id of new Set(queued.map((submission) => submission.conversationId))) await this.#drain(id, context);
+	}
+
+	async #drain(id: ConversationId, context: Context): Promise<void> {
+		await this.commitWith(async (tx) => {
+			const live = await tx.doc(LiveDoc, id);
+			if (!live.inputDrainPending || live.run !== undefined || (live.blockingTasks?.length ?? 0) > 0) return;
+			const boundary = await prepareBoundary(tx, id, resolveSettings(this.#hostSettings()));
+			delete live.inputDrainPending;
+			const { users } = await applyBoundary(tx, boundary, "final", this.#host.now());
+			if (users.length > 0) await startRun(tx, id, live, users);
+		}, context);
 	}
 
 	resume(): void {
@@ -380,6 +414,42 @@ class HarnessImpl<Tool extends ToolRegistration> extends SessionImpl implements 
 
 	createConversation(options: ConversationCreateOptions, context: Context): Promise<Conversation> {
 		return this.#create({ kind: "independent", ownership: options.ownership }, options, context);
+	}
+
+	/** Remove blockers atomically with terminal outcomes, including scheduler faults and orphaning. */
+	override commitWith<T>(
+		change: (tx: Transaction) => T | Promise<T>,
+		context: Context,
+		scope?: TransactionScope,
+	): Promise<T> {
+		return super.commitWith(
+			async (tx) => {
+				const result = await change(tx);
+				for (const task of tx.stagedTasks()) {
+					if (task.blocksInput !== true || task.state.status !== "terminal") continue;
+					const live = await tx.doc(LiveDoc, task.conversationId);
+					const index = live.blockingTasks?.indexOf(task.id) ?? -1;
+					if (index >= 0) live.blockingTasks!.splice(index, 1);
+					if (live.blockingTasks?.length === 0) {
+						delete live.blockingTasks;
+						live.inputDrainPending = true;
+					}
+				}
+				return result;
+			},
+			context,
+			scope,
+		);
+	}
+
+	protected override async taskCreated(
+		tx: Transaction,
+		record: TaskRecord<JsonValue, JsonValue, JsonValue>,
+	): Promise<void> {
+		if (record.blocksInput !== true) return;
+		const live = await tx.doc(LiveDoc, record.conversationId);
+		live.blockingTasks ??= [];
+		live.blockingTasks.push(record.id);
 	}
 
 	override report(error: unknown, info: ReportInfo = { type: "listener_error" }, context?: Context): void {
