@@ -888,6 +888,7 @@ export async function main(args: string[], options?: MainOptions) {
 		reportDiagnostics(startupSettingsDiagnostics);
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
 		await listModels(modelRuntime, searchPattern, AbortSignal.timeout(15_000));
+		printTimings();
 		process.exit(0);
 	}
 
