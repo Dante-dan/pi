@@ -1151,6 +1151,8 @@ function convertMessages(
 	return result;
 }
 
+const MAX_BEDROCK_STRICT_SCHEMA_UNIONS = 16;
+
 function convertToolConfig(
 	tools: Tool[] | undefined,
 	toolChoice: BedrockOptions["toolChoice"],
@@ -1159,13 +1161,40 @@ function convertToolConfig(
 	if (!tools?.length) return undefined;
 	if (toolChoice === "none") return undefined;
 
-	const bedrockTools: BedrockTool[] = tools.map((tool) => {
+	const resolvedTools = tools.map((tool) => {
 		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictMode);
+		return { tool, strict, parameters: getJsonSchemaToolParameters(tool, strict) };
+	});
+	// Bedrock's strict schema compiler limits union-typed parameters across the request (#11416).
+	// Optional properties become nullable unions, so several individually small tools can exceed it.
+	const unionCount = resolvedTools.reduce(
+		(total, entry) => total + (entry.strict === true ? countSchemaUnions(entry.parameters) : 0),
+		0,
+	);
+	if (unionCount > MAX_BEDROCK_STRICT_SCHEMA_UNIONS) {
+		for (const entry of resolvedTools) {
+			const sampling = entry.tool.constrainedSampling;
+			if (entry.strict === true && sampling && sampling.type === "json_schema" && sampling.strict === "prefer") {
+				entry.strict = undefined;
+				entry.parameters = entry.tool.parameters;
+			}
+		}
+		const requiredUnions = resolvedTools.reduce(
+			(total, entry) => total + (entry.strict === true ? countSchemaUnions(entry.parameters) : 0),
+			0,
+		);
+		if (requiredUnions > MAX_BEDROCK_STRICT_SCHEMA_UNIONS) {
+			throw new Error(
+				`Bedrock JSON-schema constrained sampling requires at most ${MAX_BEDROCK_STRICT_SCHEMA_UNIONS} union-typed parameters across strict tools, but required tools have ${requiredUnions}.`,
+			);
+		}
+	}
+	const bedrockTools: BedrockTool[] = resolvedTools.map(({ tool, strict, parameters }) => {
 		return {
 			toolSpec: {
 				name: tool.name,
 				description: tool.description,
-				inputSchema: { json: getJsonSchemaToolParameters(tool, strict) as unknown as DocumentType },
+				inputSchema: { json: parameters as unknown as DocumentType },
 				...(strict === true ? { strict: true } : {}),
 			},
 		};
@@ -1186,6 +1215,23 @@ function convertToolConfig(
 	}
 
 	return { tools: bedrockTools, toolChoice: bedrockToolChoice };
+}
+
+function countSchemaUnions(schema: unknown): number {
+	if (typeof schema !== "object" || schema === null || Array.isArray(schema)) return 0;
+	const node = schema as Record<string, unknown>;
+	let count =
+		(Array.isArray(node.anyOf) && node.anyOf.length > 1) || (Array.isArray(node.type) && node.type.length > 1)
+			? 1
+			: 0;
+	if (typeof node.properties === "object" && node.properties !== null) {
+		for (const property of Object.values(node.properties)) count += countSchemaUnions(property);
+	}
+	count += countSchemaUnions(node.items);
+	if (Array.isArray(node.anyOf)) {
+		for (const variant of node.anyOf) count += countSchemaUnions(variant);
+	}
+	return count;
 }
 
 function mapStopReason(reason: string | undefined): { stopReason: StopReason; errorMessage?: string } {
