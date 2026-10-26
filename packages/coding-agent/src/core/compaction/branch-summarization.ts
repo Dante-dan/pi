@@ -5,7 +5,7 @@
  * a summary of the branch being left so context isn't lost.
  */
 
-import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { RetryCallbacks, RetryPolicy } from "@earendil-works/pi-ai";
 import { contentText, normalizeContext } from "@earendil-works/pi-ai";
 import type { Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
@@ -67,6 +67,8 @@ export interface CollectEntriesResult {
 export interface GenerateBranchSummaryOptions {
 	/** Model to use for summarization */
 	model: Model<any>;
+	/** Current session thinking level */
+	thinkingLevel?: ThinkingLevel;
 	/** API key for the model */
 	apiKey?: string;
 	/** Request headers for the model */
@@ -296,6 +298,7 @@ export async function generateBranchSummary(
 ): Promise<BranchSummaryResult> {
 	const {
 		model,
+		thinkingLevel,
 		apiKey,
 		headers,
 		env,
@@ -348,6 +351,9 @@ export async function generateBranchSummary(
 	// so transient stream drops reuse the configured retry policy.
 	const context = normalizeContext({ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages });
 	const requestOptions: SimpleStreamOptions = { apiKey, headers, env, signal };
+	if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
+		requestOptions.reasoning = thinkingLevel;
+	}
 	const response = await completeSummarization(model, context, requestOptions, streamFn, retry, callbacks);
 
 	// Check if aborted or errored
