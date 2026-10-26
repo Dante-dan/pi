@@ -44,7 +44,7 @@ describe("getPowerShellConfig", () => {
 		spawnSyncMock.mockReturnValue({ status: 0, stdout: `${shell}\r\n` });
 		accessSyncMock.mockReturnValue(undefined);
 
-		expect(getPowerShellConfig()).toEqual({ shell, args: [...POWERSHELL_ARGS] });
+		expect(getPowerShellConfig()).toEqual({ shell, args: [...POWERSHELL_ARGS], commandTransport: "stdin" });
 	});
 
 	it("finds PowerShell 7 under ProgramFiles before Windows PowerShell on PATH", () => {
@@ -58,7 +58,7 @@ describe("getPowerShellConfig", () => {
 			}
 		});
 
-		expect(getPowerShellConfig()).toEqual({ shell: pwsh7, args: [...POWERSHELL_ARGS] });
+		expect(getPowerShellConfig()).toEqual({ shell: pwsh7, args: [...POWERSHELL_ARGS], commandTransport: "stdin" });
 	});
 
 	it("prefers Windows PowerShell on PATH over its system installation", () => {
@@ -70,7 +70,7 @@ describe("getPowerShellConfig", () => {
 			}
 		});
 
-		expect(getPowerShellConfig()).toEqual({ shell, args: [...POWERSHELL_ARGS] });
+		expect(getPowerShellConfig()).toEqual({ shell, args: [...POWERSHELL_ARGS], commandTransport: "stdin" });
 	});
 
 	it("finds Windows PowerShell under SystemRoot when PATH lookup is unavailable", () => {
@@ -81,7 +81,11 @@ describe("getPowerShellConfig", () => {
 			}
 		});
 
-		expect(getPowerShellConfig()).toEqual({ shell: windowsPowerShell, args: [...POWERSHELL_ARGS] });
+		expect(getPowerShellConfig()).toEqual({
+			shell: windowsPowerShell,
+			args: [...POWERSHELL_ARGS],
+			commandTransport: "stdin",
+		});
 	});
 
 	it("reports an error when no PowerShell installation exists", () => {

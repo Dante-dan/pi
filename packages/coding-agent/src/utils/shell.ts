@@ -138,7 +138,16 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 	return { shell: "sh", args: ["-c"] };
 }
 
-export const POWERSHELL_ARGS = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"] as const;
+// Read the complete script as UTF-8 instead of putting it in the Windows command line.
+// Unlike `-Command -`, a script block parses multiline constructs as one script.
+export const POWERSHELL_ARGS = [
+	"-NoProfile",
+	"-NonInteractive",
+	"-ExecutionPolicy",
+	"Bypass",
+	"-Command",
+	"[Console]::InputEncoding = [System.Text.Encoding]::UTF8; & ([scriptblock]::Create([Console]::In.ReadToEnd()))",
+] as const;
 
 /** Resolve PowerShell on Windows, preferring PowerShell 7 when available. */
 export function getPowerShellConfig(): ShellConfig {
@@ -165,7 +174,7 @@ export function getPowerShellConfig(): ShellConfig {
 		throw new Error("No PowerShell executable found. Install PowerShell or add powershell.exe/pwsh.exe to PATH.");
 	}
 
-	return { shell, args: [...POWERSHELL_ARGS] };
+	return { shell, args: [...POWERSHELL_ARGS], commandTransport: "stdin" };
 }
 
 export function getShellEnv(): NodeJS.ProcessEnv {
