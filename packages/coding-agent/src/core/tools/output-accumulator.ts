@@ -1,6 +1,5 @@
-import type { WriteStream } from "node:fs";
 import { open } from "node:fs/promises";
-import { createOutputFileStream } from "../../utils/output-files.ts";
+import { createOutputFileStream, type OutputFileStream } from "../../utils/output-files.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult, truncateTail } from "./truncate.ts";
 
 export interface OutputAccumulatorOptions {
@@ -51,8 +50,7 @@ export class OutputAccumulator {
 	private hasOpenLine = false;
 	private finished = false;
 
-	private tempFilePath: string | undefined;
-	private tempFileStream: WriteStream | undefined;
+	private tempFile: OutputFileStream | undefined;
 
 	constructor(options: OutputAccumulatorOptions = {}) {
 		this.maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
@@ -69,9 +67,9 @@ export class OutputAccumulator {
 		this.totalRawBytes += data.length;
 		this.appendDecodedText(this.decoder.decode(data, { stream: true }));
 
-		if (this.tempFileStream || this.shouldUseTempFile()) {
+		if (this.tempFile || this.shouldUseTempFile()) {
 			this.ensureTempFile();
-			this.tempFileStream?.write(data);
+			this.tempFile?.write(data);
 		} else if (data.length > 0) {
 			this.rawChunks.push(data);
 		}
@@ -114,31 +112,12 @@ export class OutputAccumulator {
 		return {
 			content: truncation.content,
 			truncation,
-			fullOutputPath: this.tempFilePath,
+			fullOutputPath: this.tempFile?.path,
 		};
 	}
 
 	async closeTempFile(): Promise<void> {
-		if (!this.tempFileStream) {
-			return;
-		}
-
-		const stream = this.tempFileStream;
-		this.tempFileStream = undefined;
-
-		await new Promise<void>((resolve, reject) => {
-			const onError = (error: Error) => {
-				stream.off("finish", onFinish);
-				reject(error);
-			};
-			const onFinish = () => {
-				stream.off("error", onError);
-				resolve();
-			};
-			stream.once("error", onError);
-			stream.once("finish", onFinish);
-			stream.end();
-		});
+		await this.tempFile?.close();
 	}
 
 	/**
@@ -147,10 +126,15 @@ export class OutputAccumulator {
 	 * last `maxBytes / 2` bytes around an omission marker.
 	 */
 	async readFullOutput(maxBytes: number): Promise<FullOutput> {
-		if (!this.tempFilePath) {
+		if (!this.tempFile) {
 			return { content: new TextDecoder().decode(Buffer.concat(this.rawChunks)), truncated: false };
 		}
-		const file = await open(this.tempFilePath, "r");
+		const path = this.tempFile.path;
+		if (!path) {
+			const { content } = truncateTail(this.getSnapshotText(), { maxBytes, maxLines: Number.MAX_SAFE_INTEGER });
+			return { content, truncated: byteLength(content) < this.totalDecodedBytes };
+		}
+		const file = await open(path, "r");
 		try {
 			const size = (await file.stat()).size;
 			if (size <= maxBytes) {
@@ -243,14 +227,12 @@ export class OutputAccumulator {
 	}
 
 	private ensureTempFile(): void {
-		if (this.tempFilePath) {
+		if (this.tempFile) {
 			return;
 		}
-		const { path, stream } = createOutputFileStream(this.tempFilePrefix, ".log");
-		this.tempFilePath = path;
-		this.tempFileStream = stream;
+		this.tempFile = createOutputFileStream(this.tempFilePrefix, ".log");
 		for (const chunk of this.rawChunks) {
-			this.tempFileStream.write(chunk);
+			this.tempFile.write(chunk);
 		}
 		this.rawChunks = [];
 	}

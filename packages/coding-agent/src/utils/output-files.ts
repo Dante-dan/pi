@@ -6,8 +6,8 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { createWriteStream, type WriteStream } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -27,8 +27,49 @@ export async function writeOutputFile(prefix: string, extension: string, data: s
 	return path;
 }
 
-/** Open a new output file for streamed output. */
-export function createOutputFileStream(prefix: string, extension: string): { path: string; stream: WriteStream } {
+export interface OutputFileStream {
+	/** Unavailable if opening, writing, or flushing the file failed. */
+	readonly path: string | undefined;
+	write(data: string | Uint8Array): void;
+	/** Wait for the file to close, including cleanup after a failed write. */
+	close(): Promise<void>;
+}
+
+/** Stream output to a file on a best-effort basis; callers keep their in-memory output on failure. */
+export function createOutputFileStream(prefix: string, extension: string): OutputFileStream {
 	const path = createOutputFilePath(prefix, extension);
-	return { path, stream: createWriteStream(path, { mode: OUTPUT_FILE_MODE, flags: "wx" }) };
+	const stream = createWriteStream(path, { mode: OUTPUT_FILE_MODE, flags: "wx" });
+	let failed = false;
+	let opened = false;
+	stream.once("open", () => {
+		opened = true;
+	});
+	// Listen immediately: a disk/quota error can arrive long before the caller closes the stream.
+	stream.on("error", () => {
+		failed = true;
+	});
+	const closed = new Promise<void>((resolve) => {
+		stream.once("close", async () => {
+			if (failed && opened) {
+				try {
+					await unlink(path);
+				} catch {
+					// Cleanup is best effort too. Never advertise an incomplete output file.
+				}
+			}
+			resolve();
+		});
+	});
+	return {
+		get path() {
+			return failed ? undefined : path;
+		},
+		write(data) {
+			if (!failed && !stream.destroyed && !stream.writableEnded) stream.write(data);
+		},
+		async close() {
+			if (!stream.destroyed && !stream.writableEnded) stream.end();
+			await closed;
+		},
+	};
 }

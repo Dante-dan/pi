@@ -6,9 +6,8 @@
  * - Direct calls from modes that need bash execution
  */
 
-import type { WriteStream } from "node:fs";
 import { splitIncompleteAnsiSuffix, stripAnsi } from "../utils/ansi.ts";
-import { createOutputFileStream } from "../utils/output-files.ts";
+import { createOutputFileStream, type OutputFileStream } from "../utils/output-files.ts";
 import { sanitizeBinaryOutput } from "../utils/shell.ts";
 import type { BashOperations } from "./tools/bash.ts";
 import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.ts";
@@ -55,17 +54,16 @@ export async function executeBashWithOperations(
 	let outputBytes = 0;
 	const maxOutputBytes = DEFAULT_MAX_BYTES * 2;
 
-	let tempFilePath: string | undefined;
-	let tempFileStream: WriteStream | undefined;
+	let tempFile: OutputFileStream | undefined;
 	let totalBytes = 0;
 
 	const ensureTempFile = () => {
-		if (tempFilePath) {
+		if (tempFile) {
 			return;
 		}
-		({ path: tempFilePath, stream: tempFileStream } = createOutputFileStream("pi-bash", ".log"));
+		tempFile = createOutputFileStream("pi-bash", ".log");
 		for (const chunk of outputChunks) {
-			tempFileStream.write(chunk);
+			tempFile.write(chunk);
 		}
 	};
 
@@ -85,9 +83,7 @@ export async function executeBashWithOperations(
 			ensureTempFile();
 		}
 
-		if (tempFileStream) {
-			tempFileStream.write(text);
-		}
+		tempFile?.write(text);
 
 		// Keep rolling buffer
 		outputChunks.push(text);
@@ -122,7 +118,7 @@ export async function executeBashWithOperations(
 	} catch (err) {
 		// An aborted command still returns the output it produced so far
 		if (!options?.signal?.aborted) {
-			tempFileStream?.end();
+			await tempFile?.close();
 			throw err;
 		}
 	}
@@ -133,7 +129,7 @@ export async function executeBashWithOperations(
 	if (truncationResult.truncated) {
 		ensureTempFile();
 	}
-	tempFileStream?.end();
+	await tempFile?.close();
 	const cancelled = options?.signal?.aborted ?? false;
 
 	return {
@@ -141,6 +137,6 @@ export async function executeBashWithOperations(
 		exitCode: cancelled ? undefined : (exitCode ?? undefined),
 		cancelled,
 		truncated: truncationResult.truncated,
-		fullOutputPath: tempFilePath,
+		fullOutputPath: tempFile?.path,
 	};
 }
