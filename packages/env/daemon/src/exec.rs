@@ -217,8 +217,8 @@ fn spawn_reader(
     sender: Sender<Message>,
     stop: Arc<AtomicBool>,
     output: Option<Arc<Output>>,
-) -> JoinHandle<()> {
-    thread::spawn(move || {
+) -> std::io::Result<JoinHandle<()>> {
+    thread::Builder::new().spawn(move || {
         sys::read_pipe(pipe, &stop, |bytes| {
             let delivered = sender.send(Message::Data(stream, bytes.to_vec())).is_ok();
             if let Some(output) = &output {
@@ -298,29 +298,47 @@ pub fn run(
     } else {
         None
     };
-    let readers = [
-        spawn_reader(
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    // Keep ownership here until all threads start, so a failed waiter spawn cannot drop an unreaped child.
+    let child = Arc::new(Mutex::new(child));
+    let mut readers = Vec::with_capacity(2);
+    let started = (|| -> std::io::Result<()> {
+        readers.push(spawn_reader(
             0,
-            child.stdout.take().unwrap(),
+            stdout,
             sender.clone(),
             stop.clone(),
             gate.clone(),
-        ),
-        spawn_reader(
-            1,
-            child.stderr.take().unwrap(),
-            sender.clone(),
-            stop.clone(),
-            gate,
-        ),
-    ];
-    let waiter = sender.clone();
-    thread::spawn(move || {
-        let _ = waiter.send(match child.wait() {
-            Ok(status) => Message::Exit(status),
-            Err(error) => Message::WaitFailed(error.to_string()),
-        });
-    });
+        )?);
+        readers.push(spawn_reader(1, stderr, sender.clone(), stop.clone(), gate)?);
+        let waiter = sender.clone();
+        let child = child.clone();
+        thread::Builder::new().spawn(move || {
+            let _ = waiter.send(match child.lock().unwrap().wait() {
+                Ok(status) => Message::Exit(status),
+                Err(error) => Message::WaitFailed(error.to_string()),
+            });
+        })?;
+        Ok(())
+    })();
+    if let Err(error) = started {
+        stop.store(true, Ordering::SeqCst);
+        for reader in &readers {
+            sys::interrupt_reader(reader);
+        }
+        kill_group(pid);
+        let mut child = child.lock().unwrap();
+        // Also kill the direct child if killing the tree could not start (for example, taskkill on Windows).
+        let _ = child.kill();
+        let _ = child.wait();
+        for reader in readers {
+            let _ = reader.join();
+        }
+        groups.lock().unwrap().remove(&pid);
+        return Err(Failure::new("spawn_error", error.to_string()));
+    }
+    drop(child);
     drop(sender);
 
     let mut decoders = [StreamDecoder::new(), StreamDecoder::new()];
